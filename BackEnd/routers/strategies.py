@@ -36,3 +36,19 @@ async def create_strategy(strategy_data: dict, db: AsyncSession = Depends(get_db
         await db.refresh(db_strategy)
         return db_strategy
     
+router.put("/{strategy_id}")
+async def update_strategy(strategy_id: int, strategy_data: dict, db: AsyncSession = Depends(get_db),
+                            user: User = Depends(get_current_user)):
+        result = await db.execute(
+            select(Strategy).where(Strategy.id == strategy_id)
+        )
+        strategy = result.scalars().first()
+        if strategy is None:
+            return {"error": "Strategy not found"}
+        for key, value in strategy_data.items():
+            setattr(strategy, key, value)
+        db.add(strategy)
+        await db.commit()
+        await db.refresh(strategy)
+        return strategy
+    
