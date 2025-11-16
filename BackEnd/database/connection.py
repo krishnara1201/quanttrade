@@ -9,7 +9,7 @@ import sys
 from functools import wraps
 import bcrypt
 from datetime import datetime
-from database.models import Base
+from BackEnd.database.models import Base
 
 DATABASE_URL = "postgresql+asyncpg://postgres:postgres@localhost/quanttrade"
 conn = None   # PostgreSQL connection object
@@ -23,4 +23,9 @@ async def init_db():
     print("Database tables created")
 
 
-            
+async def get_db() -> AsyncSession:
+    async with AsyncSessionLocal() as session:
+        try:
+            yield session
+        finally:
+            await session.close()
