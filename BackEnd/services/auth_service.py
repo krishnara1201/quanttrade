@@ -5,9 +5,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from BackEnd.database.connection import get_db
 from BackEnd.database.models import User
 from jose import JWTError, jwt as jose_jwt
+import os
 
-SECRET_KEY = "81l9qjhvwnm68j9f9qq29f5wm9vm90f67io6k343460"
-ALGORITHM = "HS256"
+SECRET_KEY = os.getenv("SECRET_KEY")
+ALGORITHM = os.getenv("ALGORITHM")
 
 oauth2_bearer = OAuth2PasswordBearer(tokenUrl="auth/token")
 

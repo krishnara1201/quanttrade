@@ -26,6 +26,11 @@ class ProjectOut(BaseModel):
     description: Optional[str] = None
     created_at: Optional[datetime] = None
     model_config = {"from_attributes": True}
+    
+@router.get("/me")
+async def read_current_user(db: AsyncSession = Depends(get_db),
+                            current_user: User = Depends(get_current_user)):
+    return UserOut.from_orm(current_user)
 
 @router.get("/{user_id}")
 async def read_user(user_id: int, db: AsyncSession = Depends(get_db), current_user: User = Depends(get_current_user)):
@@ -37,6 +42,14 @@ async def read_user(user_id: int, db: AsyncSession = Depends(get_db), current_us
         return {"error": "User not found"}
     return UserOut.from_orm(user)
 
+@router.get("/me/projects/")
+async def read_my_projects(db: AsyncSession = Depends(get_db), current_user: User = Depends(get_current_user)):
+    result = await db.execute(
+        select(Project).where(Project.owner_id == current_user.id)
+    )
+    projects = result.scalars().all()
+    return [ProjectOut.from_orm(p) for p in projects]
+
 @router.get("/{user_id}/projects/")
 async def read_user_projects(user_id: int, db: AsyncSession = Depends(get_db), current_user: User = Depends(get_current_user)):
     result = await db.execute(
@@ -45,16 +58,4 @@ async def read_user_projects(user_id: int, db: AsyncSession = Depends(get_db), c
     projects = result.scalars().all()
     return [ProjectOut.from_orm(p) for p in projects]
 
-@router.get("/me")
-async def read_current_user(db: AsyncSession = Depends(get_db),
-                            current_user: User = Depends(get_current_user)):
-    return UserOut.from_orm(current_user)
-
-@router.get("/me/projects/")
-async def read_my_projects(db: AsyncSession = Depends(get_db), current_user: User = Depends(get_current_user)):
-    result = await db.execute(
-        select(Project).where(Project.owner_id == current_user.id)
-    )
-    projects = result.scalars().all()
-    return [ProjectOut.from_orm(p) for p in projects]
 
