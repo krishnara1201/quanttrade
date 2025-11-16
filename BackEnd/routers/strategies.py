@@ -3,9 +3,9 @@ from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
-from BackEnd.database.models import User, Project, Strategy
-from BackEnd.database.connection import AsyncSessionLocal, get_db
-from BackEnd.services.auth_service import get_current_user
+from database.models import User, Project, Strategy
+from database.connection import AsyncSessionLocal, get_db
+from services.auth_service import get_current_user
 
 router = APIRouter(prefix="/strategies", tags=["strategies"])
 
@@ -35,7 +35,7 @@ async def create_strategy(strategy_data: dict, db: AsyncSession = Depends(get_db
         await db.commit()
         await db.refresh(db_strategy)
         return db_strategy
-    
+
 router.put("/{strategy_id}")
 async def update_strategy(strategy_id: int, strategy_data: dict, db: AsyncSession = Depends(get_db),
                             user: User = Depends(get_current_user)):
@@ -51,4 +51,3 @@ async def update_strategy(strategy_id: int, strategy_data: dict, db: AsyncSessio
         await db.commit()
         await db.refresh(strategy)
         return strategy
-    

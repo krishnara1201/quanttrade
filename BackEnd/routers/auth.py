@@ -5,13 +5,13 @@ from pydantic import BaseModel, EmailStr
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
-from BackEnd.database.models import User, Project
-from BackEnd.database.connection import AsyncSessionLocal, get_db
+from database.models import User, Project
+from database.connection import AsyncSessionLocal, get_db
 import bcrypt
 from datetime import datetime, timedelta
 from jose import JWTError
 from jose import jwt as jose_jwt
-from BackEnd.services.auth_service import oauth2_bearer, SECRET_KEY, ALGORITHM, get_current_user
+from services.auth_service import oauth2_bearer, SECRET_KEY, ALGORITHM, get_current_user
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 

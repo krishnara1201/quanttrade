@@ -4,9 +4,9 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from pydantic import BaseModel, EmailStr
 from typing import Optional, List
-from BackEnd.database.models import User, Project
-from BackEnd.database.connection import AsyncSessionLocal, get_db
-from BackEnd.services.auth_service import get_current_user
+from database.models import User, Project
+from database.connection import AsyncSessionLocal, get_db
+from services.auth_service import get_current_user
 from passlib.context import CryptContext
 from datetime import datetime
 

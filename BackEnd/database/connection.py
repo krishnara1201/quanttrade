@@ -9,7 +9,7 @@ import sys
 from functools import wraps
 import bcrypt
 from datetime import datetime
-from BackEnd.database.models import Base
+from database.models import Base
 
 DATABASE_URL = "postgresql+asyncpg://postgres:postgres@localhost/quanttrade"
 conn = None   # PostgreSQL connection object

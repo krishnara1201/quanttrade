@@ -1,5 +1,5 @@
 from sqlalchemy import (
-    Column, Integer, String, DateTime, Text, ForeignKey, UniqueConstraint, Index, Boolean
+    Column, Integer, String, DateTime, Text, ForeignKey, UniqueConstraint, Index, Boolean, JSON
 )
 from sqlalchemy.orm import declarative_base, relationship
 from datetime import datetime
@@ -40,6 +40,7 @@ class Strategy(Base):
     code = Column(Text)  # Strategy code as text (optional)
     status = Column(String, default="draft")  # e.g. active, inactive, backtesting
     is_public = Column(Boolean, default=False)  # visibility
+    backtest = relationship("BacktestResult", back_populates="strategy", cascade="all, delete-orphan")
     
 class MarketData(Base):
     __tablename__ = "market_data"
@@ -57,3 +58,16 @@ class MarketData(Base):
         UniqueConstraint('ticker', 'date', name='uix_ticker_date'),
         Index('idx_ticker_date', 'ticker', 'date'),
     )
+    
+class BacktestResult(Base):
+    __tablename__ = "backtest_results"
+    id = Column(Integer, primary_key=True)
+    strategy_id = Column(Integer, ForeignKey("strategies.id"), nullable=False)
+    strategy = relationship("Strategy", back_populates="backtest")
+    start_date = Column(DateTime, nullable=False)
+    end_date = Column(DateTime, nullable=False)
+    results = Column(JSON, default={})  # Summary stats, performance metrics stored as JSON
+    trades = Column(JSON, default=[])  # List of trades executed, each with details (entry/exit, price, size)
+    logs = Column(Text, default='')  # Optional logs or error messages
+    created_at = Column(DateTime, default=datetime.utcnow)
+    strategy = relationship("Strategy", back_populates="backtests")

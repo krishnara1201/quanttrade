@@ -2,12 +2,11 @@ from sqlalchemy import select
 from fastapi import FastAPI, Depends
 from fastapi.responses import JSONResponse
 from dotenv import load_dotenv
-from BackEnd.database.models import Project, User
-from BackEnd.database.connection import engine, Base, init_db, AsyncSessionLocal
+from database.models import Project, User
+from database.connection import engine, Base, init_db, AsyncSessionLocal
 from sqlalchemy.ext.asyncio import AsyncSession
-from BackEnd.routers import users, projects, auth, strategies
-from BackEnd.services.rate_limiter import fixed_window
-from collections import deque
+from routers import users, projects, auth, strategies, data
+from services.rate_limiter import fixed_window
 import threading
 load_dotenv()
 
@@ -35,6 +34,7 @@ app.include_router(users.router)
 app.include_router(projects.router)
 app.include_router(auth.router)
 app.include_router(strategies.router)
+app.include_router(data.router)
 
 @app.middleware("http")
 async def db_session_middleware(request, call_next):
