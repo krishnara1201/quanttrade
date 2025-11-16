@@ -40,3 +40,20 @@ class Strategy(Base):
     code = Column(Text)  # Strategy code as text (optional)
     status = Column(String, default="draft")  # e.g. active, inactive, backtesting
     is_public = Column(Boolean, default=False)  # visibility
+    
+class MarketData(Base):
+    __tablename__ = "market_data"
+    id = Column(Integer, primary_key=True)
+    ticker = Column(String, index=True, nullable=False)
+    date = Column(DateTime, index=True, nullable=False)
+    open = Column(String, nullable=False)
+    high = Column(String, nullable=False)
+    low = Column(String, nullable=False)
+    close = Column(String, nullable=False)
+    volume = Column(String, nullable=False)
+    adj_close = Column(String, nullable=True)
+
+    __table_args__ = (
+        UniqueConstraint('ticker', 'date', name='uix_ticker_date'),
+        Index('idx_ticker_date', 'ticker', 'date'),
+    )
