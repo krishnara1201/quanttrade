@@ -10,7 +10,7 @@ import os
 SECRET_KEY = os.getenv("SECRET_KEY")
 ALGORITHM = os.getenv("ALGORITHM")
 
-oauth2_bearer = OAuth2PasswordBearer(tokenUrl="auth/token")
+oauth2_bearer = OAuth2PasswordBearer(tokenUrl="api/auth/token")
 
 async def get_current_user(token: str = Depends(oauth2_bearer), db: AsyncSession = Depends(get_db)):
     credentials_exception = HTTPException(

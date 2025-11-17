@@ -7,7 +7,7 @@ from database.models import User, Project, Strategy
 from database.connection import AsyncSessionLocal, get_db
 from services.auth_service import get_current_user
 
-router = APIRouter(prefix="/projects", tags=["projects"])
+router = APIRouter(prefix="/api/projects", tags=["projects"])
 
 class ProjectCreate(BaseModel):
     name: str

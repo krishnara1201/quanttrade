@@ -7,7 +7,7 @@ from database.models import User, Project, Strategy, MarketData
 from database.connection import AsyncSessionLocal, get_db
 from services.auth_service import get_current_user
 
-router = APIRouter(prefix="/data", tags=["data"])
+router = APIRouter(prefix="/api/data", tags=["data"])
 
 class MarketDataCreate(BaseModel):
     symbol: str

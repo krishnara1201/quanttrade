@@ -40,7 +40,7 @@ class Strategy(Base):
     code = Column(Text)  # Strategy code as text (optional)
     status = Column(String, default="draft")  # e.g. active, inactive, backtesting
     is_public = Column(Boolean, default=False)  # visibility
-    backtest = relationship("BacktestResult", back_populates="strategy", cascade="all, delete-orphan")
+    backtests = relationship("BacktestResult", back_populates="strategy", cascade="all, delete-orphan")
     
 class MarketData(Base):
     __tablename__ = "market_data"
@@ -63,11 +63,10 @@ class BacktestResult(Base):
     __tablename__ = "backtest_results"
     id = Column(Integer, primary_key=True)
     strategy_id = Column(Integer, ForeignKey("strategies.id"), nullable=False)
-    strategy = relationship("Strategy", back_populates="backtest")
+    strategy = relationship("Strategy", back_populates="backtests")
     start_date = Column(DateTime, nullable=False)
     end_date = Column(DateTime, nullable=False)
     results = Column(JSON, default={})  # Summary stats, performance metrics stored as JSON
     trades = Column(JSON, default=[])  # List of trades executed, each with details (entry/exit, price, size)
     logs = Column(Text, default='')  # Optional logs or error messages
     created_at = Column(DateTime, default=datetime.utcnow)
-    strategy = relationship("Strategy", back_populates="backtests")

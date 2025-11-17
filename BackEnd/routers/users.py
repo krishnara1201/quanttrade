@@ -10,7 +10,7 @@ from services.auth_service import get_current_user
 from passlib.context import CryptContext
 from datetime import datetime
 
-router = APIRouter(prefix="/users", tags=["users"])
+router = APIRouter(prefix="/api/users", tags=["users"])
 
 class UserOut(BaseModel):
     id: int

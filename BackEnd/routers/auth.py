@@ -9,11 +9,10 @@ from database.models import User, Project
 from database.connection import AsyncSessionLocal, get_db
 import bcrypt
 from datetime import datetime, timedelta
-from jose import JWTError
-from jose import jwt as jose_jwt
+from jose import JWTError, jwt as jose_jwt
 from services.auth_service import oauth2_bearer, SECRET_KEY, ALGORITHM, get_current_user
 
-router = APIRouter(prefix="/auth", tags=["auth"])
+router = APIRouter(prefix="/api/auth", tags=["auth"])
 
 class UserCreate(BaseModel):
     name: str
