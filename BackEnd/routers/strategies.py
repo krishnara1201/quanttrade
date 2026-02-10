@@ -1,5 +1,5 @@
 from typing import Optional
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -9,14 +9,22 @@ from services.auth_service import get_current_user
 
 router = APIRouter(prefix="/strategies", tags=["strategies"])
 
-router.get("/")
+class StrategyCreate(BaseModel):
+    name: str
+    project_id: int
+    parameters: str
+    status: Optional[str] = "draft"
+    code: Optional[str] = None
+    is_public: Optional[bool] = False
+
+@router.get("/")
 async def read_strategies(db: AsyncSession = Depends(get_db),
                         user: User = Depends(get_current_user)):
     result = await db.execute(select(Strategy))
     strategies = result.scalars().all()
     return strategies
 
-router.get("/{strategy_id}")
+@router.get("/{strategy_id}")
 async def read_strategy(strategy_id: int, db: AsyncSession = Depends(get_db),
                         user: User = Depends(get_current_user)):
     result = await db.execute(
@@ -27,16 +35,24 @@ async def read_strategy(strategy_id: int, db: AsyncSession = Depends(get_db),
         return {"error": "Strategy not found"}
     return strategy
 
-router.post("/")
-async def create_strategy(strategy_data: dict, db: AsyncSession = Depends(get_db),
+@router.post("/")
+async def create_strategy(strategy_data: StrategyCreate, db: AsyncSession = Depends(get_db),
                             user: User = Depends(get_current_user)):
-        db_strategy = Strategy(**strategy_data)
+        # Verify project ownership
+        project_result = await db.execute(
+            select(Project).where(Project.id == strategy_data.project_id)
+        )
+        project = project_result.scalars().first()
+        if not project or project.owner_id != user.id:
+            raise HTTPException(status_code=403, detail="Unauthorized to create strategy in this project")
+        
+        db_strategy = Strategy(**strategy_data.dict())
         db.add(db_strategy)
         await db.commit()
         await db.refresh(db_strategy)
         return db_strategy
 
-router.put("/{strategy_id}")
+@router.put("/{strategy_id}")
 async def update_strategy(strategy_id: int, strategy_data: dict, db: AsyncSession = Depends(get_db),
                             user: User = Depends(get_current_user)):
         result = await db.execute(
@@ -44,7 +60,12 @@ async def update_strategy(strategy_id: int, strategy_data: dict, db: AsyncSessio
         )
         strategy = result.scalars().first()
         if strategy is None:
-            return {"error": "Strategy not found"}
+            raise HTTPException(status_code=404, detail="Strategy not found")
+        
+        # Verify ownership
+        if strategy.project.owner_id != user.id:
+            raise HTTPException(status_code=403, detail="Unauthorized")
+        
         for key, value in strategy_data.items():
             setattr(strategy, key, value)
         db.add(strategy)

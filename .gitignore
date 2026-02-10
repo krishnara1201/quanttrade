@@ -1,4 +1,27 @@
+# Python
 .venv/
 __pycache__/
 *.pyc
+*.db
+*.sqlite
+
+# Environment variables (NEVER commit these!)
+.env
 *.env
+.env.local
+.env.*.local
+
+# Node
+node_modules/
+dist/
+build/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db

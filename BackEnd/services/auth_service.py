@@ -5,7 +5,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from database.connection import get_db
 from database.models import User
 from jose import JWTError, jwt as jose_jwt
+from dotenv import load_dotenv
 import os
+
+load_dotenv()
 
 SECRET_KEY = os.getenv("SECRET_KEY")
 ALGORITHM = os.getenv("ALGORITHM")

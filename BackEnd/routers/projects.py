@@ -26,9 +26,7 @@ async def read_projects(db: AsyncSession = Depends(get_db),
 @router.post("/")
 async def create_project(project_data: ProjectCreate, db: AsyncSession = Depends(get_db),
                          user: User = Depends(get_current_user)):
-    strategy = Strategy(name="Default Strategy", parameters={})
-    db.add(strategy)
-    db_project = Project(**project_data.dict(), owner_id=user.id, strategy_id=strategy.id)
+    db_project = Project(**project_data.dict(), owner_id=user.id)
     db.add(db_project)
     await db.commit()
     await db.refresh(db_project)

@@ -1,16 +1,28 @@
 from sqlalchemy import select
 from fastapi import FastAPI, Depends
 from fastapi.responses import JSONResponse
+from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
 from database.models import Project, User
 from database.connection import engine, Base, init_db, AsyncSessionLocal
 from sqlalchemy.ext.asyncio import AsyncSession
-from routers import users, projects, auth, strategies, data
+from routers import users, projects, auth, strategies, data, backtest
 from services.rate_limiter import fixed_window
 import threading
+import os
 load_dotenv()
 
 app = FastAPI()
+
+# CORS configuration
+cors_origins = os.getenv("CORS_ORIGINS", "http://localhost:5173").split(",")
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=cors_origins,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 ip_cache = {}
 lock = threading.Lock()
 
@@ -35,6 +47,7 @@ app.include_router(projects.router)
 app.include_router(auth.router)
 app.include_router(strategies.router)
 app.include_router(data.router)
+app.include_router(backtest.router)
 
 @app.middleware("http")
 async def db_session_middleware(request, call_next):
