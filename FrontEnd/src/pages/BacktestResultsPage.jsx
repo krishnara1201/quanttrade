@@ -103,6 +103,14 @@ export default function BacktestResultsPage() {
                   <span className="label">Trades</span>
                   <span className="value">{selectedResult.metrics?.num_trades || 0}</span>
                 </div>
+                <div className="metric">
+                  <span className="label">Max Drawdown</span>
+                  <span className="value">{selectedResult.metrics?.max_drawdown_pct?.toFixed(2) || 0}%</span>
+                </div>
+                <div className="metric">
+                  <span className="label">Sharpe Ratio</span>
+                  <span className="value">{selectedResult.metrics?.sharpe_ratio?.toFixed(2) || 0}</span>
+                </div>
               </div>
 
               <h3 style={{ marginTop: '20px' }}>Trades</h3>
@@ -130,14 +138,9 @@ export default function BacktestResultsPage() {
         <div className="card" style={{ marginTop: '20px' }}>
           <h3>Price & Signals</h3>
           <BacktestChart
-            data={selectedResult.signals?.map((d, idx) => ({
-              ...d,
-              index: idx,
-            }))}
-            trades={selectedResult.trades?.map((t, idx) => ({
-              ...t,
-              index: idx,
-            })) || []}
+            data={selectedResult.signals}
+            trades={selectedResult.trades}
+            equityCurve={selectedResult.equity_curve}
           />
         </div>
       )}
