@@ -48,3 +48,12 @@ def test_bollinger_bands_match_manual_calc():
     pd.testing.assert_series_equal(df["bb_mid"], mid, check_names=False)
     pd.testing.assert_series_equal(df["bb_upper"], mid + 2 * std, check_names=False)
     pd.testing.assert_series_equal(df["bb_lower"], mid - 2 * std, check_names=False)
+
+
+def test_ema_matches_pandas_ewm():
+    closes = [10, 11, 12, 13, 14, 15, 16, 17, 18, 19]
+    df = make_price_df(closes)
+    executor = make_executor({"ema_period": 4})
+    executor._calculate_indicators(df, {"ema_period": 4})
+    expected = pd.Series(closes, index=df.index).ewm(span=4, adjust=False).mean()
+    pd.testing.assert_series_equal(df["ema"], expected, check_names=False)

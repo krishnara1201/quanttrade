@@ -86,15 +86,19 @@ class StrategyExecutor:
             'signals': df[['close', 'signal']].to_dict(orient='list'),
         }
     
+    def _calculate_ema(self, series: pd.Series, period: int) -> pd.Series:
+        """Exponential moving average, matching pandas' standard ewm formula"""
+        return series.ewm(span=period, adjust=False).mean()
+
     def _calculate_indicators(self, df: pd.DataFrame, params: Dict[str, Any]):
         """Calculate technical indicators based on strategy parameters"""
-        
+
         # Simple Moving Average
         if 'fast_ma' in params:
             df['fast_ma'] = df['close'].rolling(window=int(params['fast_ma'])).mean()
         if 'slow_ma' in params:
             df['slow_ma'] = df['close'].rolling(window=int(params['slow_ma'])).mean()
-        
+
         # RSI (Relative Strength Index)
         if 'rsi_period' in params:
             period = int(params['rsi_period'])
@@ -103,7 +107,7 @@ class StrategyExecutor:
             loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
             rs = gain / loss
             df['rsi'] = 100 - (100 / (1 + rs))
-        
+
         # Bollinger Bands
         if 'bb_period' in params and 'bb_std' in params:
             period = int(params['bb_period'])
@@ -112,6 +116,10 @@ class StrategyExecutor:
             df['bb_std'] = df['close'].rolling(window=period).std()
             df['bb_upper'] = df['bb_mid'] + (std_dev * df['bb_std'])
             df['bb_lower'] = df['bb_mid'] - (std_dev * df['bb_std'])
+
+        # Exponential Moving Average
+        if 'ema_period' in params:
+            df['ema'] = self._calculate_ema(df['close'], int(params['ema_period']))
     
     def _evaluate_condition(self, condition: str, df: pd.DataFrame, row_idx: int) -> bool:
         """
