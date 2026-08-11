@@ -33,7 +33,25 @@ The `.gitignore` is already configured, but verify:
 - ✅ Never commit passwords, API keys, or secrets
 - ✅ Use `.env.example` as a template only
 
-## 🚀 Quick Start
+## 🐳 Docker Setup (Recommended)
+
+Run the full stack — Postgres, backend, and frontend — with Docker Compose. No local Python, Node, or Postgres install needed.
+
+```bash
+cp BackEnd/.env.example BackEnd/.env
+# Edit BackEnd/.env and replace SECRET_KEY with your generated key (see Security Setup above)
+docker compose up
+```
+
+- Backend: http://localhost:8000
+- Frontend: http://localhost:5173
+- Postgres: localhost:5432 (user/password/db: `postgres`/`postgres`/`quanttrade`)
+
+Both backend and frontend run in dev mode with hot reload — edits to files under `BackEnd/` or `FrontEnd/` are picked up automatically. Postgres data persists in a named Docker volume across restarts; `docker compose down -v` removes it.
+
+To rebuild after dependency changes: `docker compose up --build`.
+
+## 🚀 Quick Start (Manual, without Docker)
 
 ### Backend Setup
 ```bash

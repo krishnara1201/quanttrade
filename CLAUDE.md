@@ -16,6 +16,7 @@ source .venv/bin/activate
 pip install -r requirements.txt
 uvicorn app:app --reload
 ```
+Alternatively, run the full stack (Postgres included) via `docker compose up` from the repo root — see `README.md`'s Docker Setup section.
 
 ### Tests
 ```bash
@@ -37,7 +38,7 @@ npm run preview
 `npm run lint` is a no-op placeholder (`echo "No lint configured yet"`) — no linter is configured.
 
 ### Environment
-Copy `BackEnd/.env.example` to `BackEnd/.env` and set `SECRET_KEY` (JWT signing) and `ALGORITHM` (e.g. `HS256`); both are read via `os.getenv` in `services/auth_service.py` with no defaults, so the app will error on auth routes if unset. `CORS_ORIGINS` is a comma-separated list consumed in `app.py`. Note: the database connection string is currently **hardcoded** in `database/connection.py` (`DATABASE_URL`), not read from env, so `DATABASE_URL` in `.env.example` is currently unused — a local PostgreSQL instance matching that hardcoded URL is required.
+Copy `BackEnd/.env.example` to `BackEnd/.env` and set `SECRET_KEY` (JWT signing) and `ALGORITHM` (e.g. `HS256`); both are read via `os.getenv` in `services/auth_service.py` with no defaults, so the app will error on auth routes if unset. `CORS_ORIGINS` is a comma-separated list consumed in `app.py`. `DATABASE_URL` is read from the environment in `database/connection.py` (via `os.getenv`, falling back to `postgresql+asyncpg://postgres:postgres@localhost/quanttrade` if unset) — set it in `.env` to point at a different Postgres instance. The Docker Compose stack (`docker-compose.yml`) overrides it to point at the `postgres` service.
 
 ## Architecture
 
