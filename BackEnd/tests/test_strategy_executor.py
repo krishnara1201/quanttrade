@@ -139,6 +139,13 @@ def test_backtest_returns_row_record_signals_and_equity_curve():
     for row in result["equity_curve"]:
         assert set(row.keys()) == {"date", "equity"}
 
+    # Regression guard: a prior bug in the signal-assignment loop (a `.loc`
+    # based form) silently corrupted the DataFrame rather than raising,
+    # producing a df of all-zero signals with the right shape. Assert the
+    # signals/trades actually reflect real strategy activity, not just shape.
+    assert any(row["signal"] != 0 for row in result["signals"])
+    assert len(result["trades"]) >= 1
+
 
 def test_max_drawdown_pct_known_curve():
     equity_values = [1000, 1050, 1020, 1100, 950, 1080]
@@ -177,3 +184,26 @@ def test_sharpe_ratio_zero_when_no_volatility():
 
     assert metrics["sharpe_ratio"] == 0.0
     assert metrics["max_drawdown_pct"] == 0.0
+
+
+def test_metrics_use_equity_curve_final_value_when_position_still_open():
+    # Entry rule fires on bar 1 and never exits (all closes positive), so trades
+    # contains only an ENTRY with no matching EXIT. total_return/final_capital
+    # must reflect the mark-to-market equity curve, not just realized exit P&L.
+    closes = [100, 101, 99, 102, 105, 103, 108]
+    df = make_price_df(closes)
+    executor = make_executor(entry="close > 0", exit="close < 0")
+
+    result = executor.backtest(df, initial_capital=1000.0, commission_pct=0.1, slippage_pct=0.05)
+
+    trades = result["trades"]
+    metrics = result["metrics"]
+    equity_curve = result["equity_curve"]
+
+    assert any(t["type"] == "entry" for t in trades)
+    assert not any(t["type"] == "exit" for t in trades)
+
+    expected_final_capital = equity_curve[-1]["equity"]
+    assert expected_final_capital != pytest.approx(1000.0)
+    assert metrics["final_capital"] == pytest.approx(expected_final_capital, rel=1e-9)
+    assert metrics["total_return"] == pytest.approx(expected_final_capital - 1000.0, rel=1e-9)

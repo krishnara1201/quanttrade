@@ -263,7 +263,10 @@ class StrategyExecutor:
 
         total_pnl = sum(t.get('pnl', 0) for t in trades if t['type'] == 'exit')
 
-        final_capital = initial_capital + total_pnl
+        if equity_curve:
+            final_capital = equity_curve[-1]['equity']
+        else:
+            final_capital = initial_capital + total_pnl
         total_return = final_capital - initial_capital
         return_pct = (total_return / initial_capital) * 100
 
