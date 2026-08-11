@@ -8,8 +8,10 @@ from services.strategy_executor import StrategyExecutor
 import pandas as pd
 from datetime import datetime
 
-async def run_backtest(strategy_id: int, ticker: str, start_date: str, end_date: str, 
+async def run_backtest(strategy_id: int, ticker: str, start_date: str, end_date: str,
                        initial_capital: float = 10000.0,
+                       commission_pct: float = 0.1,
+                       slippage_pct: float = 0.05,
                        db: AsyncSession = Depends(get_db),
                        user: User = Depends(get_current_user)):
     """Run backtest for a strategy on market data"""
@@ -56,10 +58,13 @@ async def run_backtest(strategy_id: int, ticker: str, start_date: str, end_date:
     # Execute strategy
     try:
         executor = StrategyExecutor(strategy.parameters)
-        backtest_results = executor.backtest(df, initial_capital=initial_capital)
+        backtest_results = executor.backtest(
+            df, initial_capital=initial_capital,
+            commission_pct=commission_pct, slippage_pct=slippage_pct
+        )
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Backtest execution failed: {str(e)}")
-    
+
     # Save results
     result_record = BacktestResult(
         strategy_id=strategy_id,
@@ -67,17 +72,21 @@ async def run_backtest(strategy_id: int, ticker: str, start_date: str, end_date:
         end_date=datetime.fromisoformat(end_date),
         results=backtest_results['metrics'],
         trades=backtest_results['trades'],
+        signals=backtest_results['signals'],
+        equity_curve=backtest_results['equity_curve'],
     )
-    
+
     db.add(result_record)
     await db.commit()
     await db.refresh(result_record)
-    
+
     return {
         'id': result_record.id,
         'strategy_id': strategy_id,
         'metrics': backtest_results['metrics'],
         'trades': backtest_results['trades'],
+        'signals': backtest_results['signals'],
+        'equity_curve': backtest_results['equity_curve'],
         'created_at': result_record.created_at.isoformat(),
     }
 
