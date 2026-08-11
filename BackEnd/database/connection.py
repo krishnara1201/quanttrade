@@ -11,7 +11,10 @@ import bcrypt
 from datetime import datetime
 from database.models import Base
 
-DATABASE_URL = "postgresql+asyncpg://postgres:postgres@localhost/quanttrade"
+load_dotenv()
+DATABASE_URL = os.getenv(
+    "DATABASE_URL", "postgresql+asyncpg://postgres:postgres@localhost/quanttrade"
+)
 conn = None   # PostgreSQL connection object
 engine = create_async_engine(DATABASE_URL, echo=True, pool_pre_ping=True)
 AsyncSessionLocal = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
