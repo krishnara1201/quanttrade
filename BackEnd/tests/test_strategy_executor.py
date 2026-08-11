@@ -117,3 +117,63 @@ def test_execute_trades_skips_entry_when_cash_cannot_afford_one_share():
 
     assert trades == []
     assert all(pt["equity"] == pytest.approx(500.0) for pt in equity_curve)
+
+
+def test_backtest_returns_row_record_signals_and_equity_curve():
+    closes = [100, 101, 99, 102, 105, 103, 108]
+    df = make_price_df(closes)
+    config = {
+        "name": "sma-cross",
+        "parameters": {"fast_ma": 2, "slow_ma": 4},
+        "rules": {"entry": "fast_ma > slow_ma", "exit": "fast_ma < slow_ma"},
+    }
+    executor = StrategyExecutor(config)
+
+    result = executor.backtest(df, initial_capital=1000.0, commission_pct=0.1, slippage_pct=0.05)
+
+    assert set(result.keys()) == {"trades", "metrics", "signals", "equity_curve"}
+    assert len(result["signals"]) == len(closes)
+    assert len(result["equity_curve"]) == len(closes)
+    for row in result["signals"]:
+        assert set(row.keys()) == {"date", "close", "signal"}
+    for row in result["equity_curve"]:
+        assert set(row.keys()) == {"date", "equity"}
+
+
+def test_max_drawdown_pct_known_curve():
+    equity_values = [1000, 1050, 1020, 1100, 950, 1080]
+    equity_curve = [{"date": str(i), "equity": v} for i, v in enumerate(equity_values)]
+    executor = make_executor()
+
+    metrics = executor._calculate_metrics(
+        df=make_price_df(equity_values), trades=[], initial_capital=1000.0, equity_curve=equity_curve
+    )
+
+    expected_drawdown = (1100 - 950) / 1100 * 100
+    assert metrics["max_drawdown_pct"] == pytest.approx(expected_drawdown, rel=1e-6)
+
+
+def test_sharpe_ratio_matches_manual_formula():
+    equity_values = [1000, 1050, 1020, 1100, 950, 1080]
+    equity_curve = [{"date": str(i), "equity": v} for i, v in enumerate(equity_values)]
+    executor = make_executor()
+
+    metrics = executor._calculate_metrics(
+        df=make_price_df(equity_values), trades=[], initial_capital=1000.0, equity_curve=equity_curve
+    )
+
+    returns = pd.Series(equity_values).pct_change().dropna()
+    expected_sharpe = (returns.mean() / returns.std()) * (252 ** 0.5)
+    assert metrics["sharpe_ratio"] == pytest.approx(expected_sharpe, rel=1e-6)
+
+
+def test_sharpe_ratio_zero_when_no_volatility():
+    equity_curve = [{"date": str(i), "equity": 1000.0} for i in range(5)]
+    executor = make_executor()
+
+    metrics = executor._calculate_metrics(
+        df=make_price_df([1000] * 5), trades=[], initial_capital=1000.0, equity_curve=equity_curve
+    )
+
+    assert metrics["sharpe_ratio"] == 0.0
+    assert metrics["max_drawdown_pct"] == 0.0

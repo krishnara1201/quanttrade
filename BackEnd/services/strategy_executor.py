@@ -43,47 +43,54 @@ class StrategyExecutor:
         
         return True
     
-    def backtest(self, df: pd.DataFrame, initial_capital: float = 10000.0) -> Dict[str, Any]:
+    def backtest(self, df: pd.DataFrame, initial_capital: float = 10000.0,
+                 commission_pct: float = 0.1, slippage_pct: float = 0.05) -> Dict[str, Any]:
         """
         Run backtest on market data
-        
+
         Args:
             df: DataFrame with OHLCV data (must have 'close' column)
             initial_capital: Starting capital
-            
+            commission_pct: Commission as a percent of trade notional
+            slippage_pct: Slippage as a percent applied against the trader on fill
+
         Returns:
-            Results dict with trades, metrics, performance
+            Results dict with trades, metrics, per-bar signals, and equity curve
         """
         self.validate()
-        
-        # Make a copy to avoid modifying original
+
         df = df.copy()
+        original_len = len(df)
         params = self.config.get('parameters', {})
         rules = self.config.get('rules', {})
-        
-        # Calculate indicators based on parameters
+
         self._calculate_indicators(df, params)
-        
-        # Generate signals
-        df['signal'] = 0  # 0=hold, 1=buy, -1=sell
-        
-        for i in range(1, len(df)):
-            # Evaluate entry condition
+
+        df['signal'] = 0
+
+        for i in range(1, original_len):
             if self._evaluate_condition(rules['entry'], df, i):
-                df.loc[i, 'signal'] = 1
-            
-            # Evaluate exit condition
+                df.loc[df.index[i], 'signal'] = 1
             elif self._evaluate_condition(rules['exit'], df, i):
-                df.loc[i, 'signal'] = -1
-        
-        # Execute trades and calculate P&L
-        trades = self._execute_trades(df, initial_capital)
-        metrics = self._calculate_metrics(df, trades, initial_capital)
-        
+                df.loc[df.index[i], 'signal'] = -1
+
+        trades, equity_curve = self._execute_trades(df, initial_capital, commission_pct, slippage_pct)
+        metrics = self._calculate_metrics(df, trades, initial_capital, equity_curve)
+
+        signals = [
+            {
+                'date': self._format_date(df.index[i]),
+                'close': float(df.iloc[i]['close']),
+                'signal': int(df.iloc[i]['signal']),
+            }
+            for i in range(original_len)
+        ]
+
         return {
             'trades': trades,
             'metrics': metrics,
-            'signals': df[['close', 'signal']].to_dict(orient='list'),
+            'signals': signals,
+            'equity_curve': equity_curve,
         }
     
     def _calculate_ema(self, series: pd.Series, period: int) -> pd.Series:
@@ -196,9 +203,22 @@ class StrategyExecutor:
         entry_cost_basis = 0.0
 
         for i in range(len(df)):
-            signal = df.iloc[i].get('signal', 0)
-            close_price = df.iloc[i]['close']
+            signal = df['signal'].iloc[i] if 'signal' in df.columns else 0
+            close_price = df['close'].iloc[i]
             timestamp = self._format_date(df.index[i])
+
+            # Handle NaN close prices (shouldn't happen, but be defensive)
+            if pd.isna(close_price):
+                # Use the last valid close or skip
+                equity = cash + (shares * cash if shares > 0 else 0)  # Use cash as fallback
+                equity_curve.append({'date': timestamp, 'equity': float(equity)})
+                continue
+
+            # Normalize signal to int
+            if pd.isna(signal):
+                signal = 0
+            else:
+                signal = int(signal)
 
             if signal == 1 and shares == 0:
                 fill_price = close_price * (1 + slippage_pct / 100)
@@ -239,34 +259,61 @@ class StrategyExecutor:
 
         return trades, equity_curve
     
-    def _calculate_metrics(self, df: pd.DataFrame, trades: List[Dict], initial_capital: float) -> Dict[str, Any]:
+    def _calculate_metrics(self, df: pd.DataFrame, trades: List[Dict],
+                            initial_capital: float, equity_curve: List[Dict]) -> Dict[str, Any]:
         """Calculate performance metrics"""
+        max_drawdown_pct = self._max_drawdown_pct(equity_curve)
+        sharpe_ratio = self._sharpe_ratio(equity_curve)
+
         if not trades:
             return {
                 'total_return': 0.0,
                 'return_pct': 0.0,
                 'win_rate': 0.0,
                 'num_trades': 0,
-                'max_drawdown': 0.0,
+                'max_drawdown_pct': max_drawdown_pct,
+                'sharpe_ratio': sharpe_ratio,
             }
-        
-        # Calculate total P&L
+
         total_pnl = sum(t.get('pnl', 0) for t in trades if t['type'] == 'exit')
-        
-        # Calculate return
+
         final_capital = initial_capital + total_pnl
         total_return = final_capital - initial_capital
         return_pct = (total_return / initial_capital) * 100
-        
-        # Calculate win rate
+
         exits = [t for t in trades if t['type'] == 'exit']
         wins = len([t for t in exits if t.get('pnl', 0) > 0])
         win_rate = (wins / len(exits) * 100) if exits else 0.0
-        
+
         return {
             'total_return': float(total_return),
             'return_pct': float(return_pct),
             'win_rate': float(win_rate),
             'num_trades': len(exits),
             'final_capital': float(final_capital),
+            'max_drawdown_pct': max_drawdown_pct,
+            'sharpe_ratio': sharpe_ratio,
         }
+
+    def _max_drawdown_pct(self, equity_curve: List[Dict]) -> float:
+        if not equity_curve:
+            return 0.0
+        peak = equity_curve[0]['equity']
+        max_dd = 0.0
+        for point in equity_curve:
+            equity = point['equity']
+            peak = max(peak, equity)
+            if peak > 0:
+                drawdown = (peak - equity) / peak * 100
+                max_dd = max(max_dd, drawdown)
+        return float(max_dd)
+
+    def _sharpe_ratio(self, equity_curve: List[Dict]) -> float:
+        if len(equity_curve) < 2:
+            return 0.0
+        values = pd.Series([p['equity'] for p in equity_curve])
+        returns = values.pct_change().dropna()
+        std = returns.std()
+        if not std or pd.isna(std) or std == 0:
+            return 0.0
+        return float((returns.mean() / std) * (252 ** 0.5))
