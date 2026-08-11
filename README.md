@@ -47,9 +47,13 @@ docker compose up
 - Frontend: http://localhost:5173
 - Postgres: localhost:5432 (user/password/db: `postgres`/`postgres`/`quanttrade`)
 
-Both backend and frontend run in dev mode with hot reload — edits to files under `BackEnd/` or `FrontEnd/` are picked up automatically. Postgres data persists in a named Docker volume across restarts; `docker compose down -v` removes it.
+Both backend and frontend run in dev mode with hot reload — edits to files under `BackEnd/` or `FrontEnd/` are picked up automatically. (On Docker Desktop for macOS/Windows, file-change detection across the VM boundary can be unreliable — if hot reload doesn't trigger, set `WATCHFILES_FORCE_POLLING=true` for the backend and enable `server.watch.usePolling` in `FrontEnd/vite.config.js` for the frontend.)
 
-To rebuild after dependency changes: `docker compose up --build`.
+Postgres data persists in a named Docker volume across restarts. To stop the stack and keep data: `docker compose down`. To also remove the Postgres volume (deletes all data): `docker compose down -v`.
+
+To rebuild after backend dependency changes: `docker compose up --build`.
+After frontend dependency changes, also refresh the node_modules volume:
+`docker compose up --build --renew-anon-volumes`.
 
 ## 🚀 Quick Start (Manual, without Docker)
 
