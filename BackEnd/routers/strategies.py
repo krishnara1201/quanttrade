@@ -2,6 +2,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy import select
+from sqlalchemy.orm import selectinload
 from sqlalchemy.ext.asyncio import AsyncSession
 from database.models import User, Project, Strategy
 from database.connection import AsyncSessionLocal, get_db
@@ -56,12 +57,12 @@ async def create_strategy(strategy_data: StrategyCreate, db: AsyncSession = Depe
 async def update_strategy(strategy_id: int, strategy_data: dict, db: AsyncSession = Depends(get_db),
                             user: User = Depends(get_current_user)):
         result = await db.execute(
-            select(Strategy).where(Strategy.id == strategy_id)
+            select(Strategy).options(selectinload(Strategy.project)).where(Strategy.id == strategy_id)
         )
         strategy = result.scalars().first()
         if strategy is None:
             raise HTTPException(status_code=404, detail="Strategy not found")
-        
+
         # Verify ownership
         if strategy.project.owner_id != user.id:
             raise HTTPException(status_code=403, detail="Unauthorized")

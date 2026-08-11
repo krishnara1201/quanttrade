@@ -2,6 +2,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 from sqlalchemy import select
+from sqlalchemy.orm import selectinload
 from sqlalchemy.ext.asyncio import AsyncSession
 from database.models import User, Strategy, BacktestResult
 from database.connection import get_db
@@ -56,7 +57,9 @@ async def get_backtest_detail(
 ):
     """Get detailed backtest results with signals"""
     result = await db.execute(
-        select(BacktestResult).where(BacktestResult.id == backtest_id)
+        select(BacktestResult)
+        .options(selectinload(BacktestResult.strategy).selectinload(Strategy.project))
+        .where(BacktestResult.id == backtest_id)
     )
     backtest = result.scalars().first()
     

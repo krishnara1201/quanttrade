@@ -12,3 +12,5 @@ numpy==1.26.4
 pydantic[email]==2.9.2
 python-multipart==0.0.9
 pytest==8.3.3
+pytest-asyncio==0.24.0
+aiosqlite==0.22.1

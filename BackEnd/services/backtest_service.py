@@ -1,5 +1,6 @@
 from fastapi import Depends, HTTPException
 from sqlalchemy import select
+from sqlalchemy.orm import selectinload
 from sqlalchemy.ext.asyncio import AsyncSession
 from database.connection import get_db
 from database.models import User, Strategy, MarketData, BacktestResult
@@ -18,12 +19,12 @@ async def run_backtest(strategy_id: int, ticker: str, start_date: str, end_date:
     
     # Fetch strategy
     strategy_result = await db.execute(
-        select(Strategy).where(Strategy.id == strategy_id)
+        select(Strategy).options(selectinload(Strategy.project)).where(Strategy.id == strategy_id)
     )
     strategy = strategy_result.scalars().first()
     if strategy is None:
         raise HTTPException(status_code=404, detail="Strategy not found")
-    
+
     # Verify ownership
     if strategy.project.owner_id != user.id:
         raise HTTPException(status_code=403, detail="Unauthorized")
@@ -95,7 +96,7 @@ async def get_backtest_results(strategy_id: int, db: AsyncSession = Depends(get_
     """Retrieve backtest results for a strategy"""
     # Verify ownership
     strategy_result = await db.execute(
-        select(Strategy).where(Strategy.id == strategy_id)
+        select(Strategy).options(selectinload(Strategy.project)).where(Strategy.id == strategy_id)
     )
     strategy = strategy_result.scalars().first()
     if not strategy or strategy.project.owner_id != user.id:
