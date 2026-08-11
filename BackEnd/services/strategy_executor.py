@@ -60,7 +60,6 @@ class StrategyExecutor:
         self.validate()
 
         df = df.copy()
-        original_len = len(df)
         params = self.config.get('parameters', {})
         rules = self.config.get('rules', {})
 
@@ -68,11 +67,11 @@ class StrategyExecutor:
 
         df['signal'] = 0
 
-        for i in range(1, original_len):
+        for i in range(1, len(df)):
             if self._evaluate_condition(rules['entry'], df, i):
-                df.loc[df.index[i], 'signal'] = 1
+                df.iloc[i, df.columns.get_loc('signal')] = 1
             elif self._evaluate_condition(rules['exit'], df, i):
-                df.loc[df.index[i], 'signal'] = -1
+                df.iloc[i, df.columns.get_loc('signal')] = -1
 
         trades, equity_curve = self._execute_trades(df, initial_capital, commission_pct, slippage_pct)
         metrics = self._calculate_metrics(df, trades, initial_capital, equity_curve)
@@ -83,7 +82,7 @@ class StrategyExecutor:
                 'close': float(df.iloc[i]['close']),
                 'signal': int(df.iloc[i]['signal']),
             }
-            for i in range(original_len)
+            for i in range(len(df))
         ]
 
         return {
@@ -206,19 +205,6 @@ class StrategyExecutor:
             signal = df['signal'].iloc[i] if 'signal' in df.columns else 0
             close_price = df['close'].iloc[i]
             timestamp = self._format_date(df.index[i])
-
-            # Handle NaN close prices (shouldn't happen, but be defensive)
-            if pd.isna(close_price):
-                # Use the last valid close or skip
-                equity = cash + (shares * cash if shares > 0 else 0)  # Use cash as fallback
-                equity_curve.append({'date': timestamp, 'equity': float(equity)})
-                continue
-
-            # Normalize signal to int
-            if pd.isna(signal):
-                signal = 0
-            else:
-                signal = int(signal)
 
             if signal == 1 and shares == 0:
                 fill_price = close_price * (1 + slippage_pct / 100)
