@@ -68,5 +68,7 @@ class BacktestResult(Base):
     end_date = Column(DateTime, nullable=False)
     results = Column(JSON, default={})  # Summary stats, performance metrics stored as JSON
     trades = Column(JSON, default=[])  # List of trades executed, each with details (entry/exit, price, size)
+    signals = Column(JSON, default=[])  # Per-bar {date, close, signal} series for charting
+    equity_curve = Column(JSON, default=[])  # Per-bar {date, equity} mark-to-market series
     logs = Column(Text, default='')  # Optional logs or error messages
     created_at = Column(DateTime, default=datetime.utcnow)
