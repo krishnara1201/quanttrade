@@ -57,3 +57,21 @@ def test_ema_matches_pandas_ewm():
     executor._calculate_indicators(df, {"ema_period": 4})
     expected = pd.Series(closes, index=df.index).ewm(span=4, adjust=False).mean()
     pd.testing.assert_series_equal(df["ema"], expected, check_names=False)
+
+
+def test_macd_matches_manual_ema_calc():
+    closes = [10, 12, 11, 13, 15, 14, 16, 18, 17, 19, 21, 20, 22, 24, 23]
+    df = make_price_df(closes)
+    executor = make_executor({"macd_fast": 3, "macd_slow": 6, "macd_signal": 2})
+    executor._calculate_indicators(df, {"macd_fast": 3, "macd_slow": 6, "macd_signal": 2})
+
+    price = pd.Series(closes, index=df.index)
+    fast_ema = price.ewm(span=3, adjust=False).mean()
+    slow_ema = price.ewm(span=6, adjust=False).mean()
+    expected_macd = fast_ema - slow_ema
+    expected_signal = expected_macd.ewm(span=2, adjust=False).mean()
+    expected_hist = expected_macd - expected_signal
+
+    pd.testing.assert_series_equal(df["macd"], expected_macd, check_names=False)
+    pd.testing.assert_series_equal(df["macd_signal_line"], expected_signal, check_names=False)
+    pd.testing.assert_series_equal(df["macd_hist"], expected_hist, check_names=False)

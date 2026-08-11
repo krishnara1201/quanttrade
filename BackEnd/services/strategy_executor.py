@@ -120,6 +120,14 @@ class StrategyExecutor:
         # Exponential Moving Average
         if 'ema_period' in params:
             df['ema'] = self._calculate_ema(df['close'], int(params['ema_period']))
+
+        # MACD
+        if 'macd_fast' in params and 'macd_slow' in params and 'macd_signal' in params:
+            fast_ema = self._calculate_ema(df['close'], int(params['macd_fast']))
+            slow_ema = self._calculate_ema(df['close'], int(params['macd_slow']))
+            df['macd'] = fast_ema - slow_ema
+            df['macd_signal_line'] = self._calculate_ema(df['macd'], int(params['macd_signal']))
+            df['macd_hist'] = df['macd'] - df['macd_signal_line']
     
     def _evaluate_condition(self, condition: str, df: pd.DataFrame, row_idx: int) -> bool:
         """
