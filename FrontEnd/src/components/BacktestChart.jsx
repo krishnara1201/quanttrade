@@ -1,20 +1,24 @@
 import React from 'react';
 import {
   LineChart, Line, ScatterChart, Scatter, XAxis, YAxis, CartesianGrid,
-  Tooltip, Legend, ResponsiveContainer, ComposedChart, ReferenceDot
+  Tooltip, Legend, ResponsiveContainer, ComposedChart
 } from 'recharts';
 
-export default function BacktestChart({ data, trades }) {
+export default function BacktestChart({ data, trades, equityCurve }) {
   if (!data || data.length === 0) {
     return <p className="muted">No data to display</p>;
   }
 
-  // Prepare chart data by merging price data with entry/exit markers
-  const chartData = data.map((d, idx) => {
-    const entry = trades.find(t => t.type === 'entry' && t.index === idx);
-    const exit = trades.find(t => t.type === 'exit' && t.index === idx);
+  const tradesByDate = new Map();
+  (trades || []).forEach((t) => {
+    tradesByDate.set(t.date, t);
+  });
+
+  const chartData = data.map((d) => {
+    const trade = tradesByDate.get(d.date);
+    const entry = trade && trade.type === 'entry' ? trade : null;
+    const exit = trade && trade.type === 'exit' ? trade : null;
     return {
-      index: idx,
       date: d.date,
       close: d.close,
       entry: entry ? entry.price : null,
@@ -22,6 +26,11 @@ export default function BacktestChart({ data, trades }) {
       pnl: exit ? exit.pnl : null,
     };
   });
+
+  const equityData = (equityCurve || []).map((point) => ({
+    date: point.date,
+    equity: point.equity,
+  }));
 
   return (
     <div className="chart-container">
@@ -37,11 +46,9 @@ export default function BacktestChart({ data, trades }) {
           <YAxis yAxisId="right" orientation="right" />
           <Tooltip
             formatter={(value) => (typeof value === 'number' ? value.toFixed(2) : value)}
-            labelFormatter={(label) => `Index: ${label}`}
           />
           <Legend />
 
-          {/* Stock Price Line */}
           <Line
             yAxisId="left"
             type="monotone"
@@ -52,7 +59,6 @@ export default function BacktestChart({ data, trades }) {
             isAnimationActive={false}
           />
 
-          {/* Entry Points (Buy) */}
           <Scatter
             yAxisId="left"
             dataKey="entry"
@@ -62,7 +68,6 @@ export default function BacktestChart({ data, trades }) {
             isAnimationActive={false}
           />
 
-          {/* Exit Points (Sell) */}
           <Scatter
             yAxisId="left"
             dataKey="exit"
@@ -73,6 +78,30 @@ export default function BacktestChart({ data, trades }) {
           />
         </ComposedChart>
       </ResponsiveContainer>
+
+      {equityData.length > 0 && (
+        <ResponsiveContainer width="100%" height={200}>
+          <LineChart data={equityData} margin={{ top: 5, right: 30, left: 0, bottom: 5 }}>
+            <CartesianGrid strokeDasharray="3 3" />
+            <XAxis
+              dataKey="date"
+              tick={{ fontSize: 12 }}
+              interval={Math.floor(equityData.length / 10)}
+            />
+            <YAxis />
+            <Tooltip formatter={(value) => (typeof value === 'number' ? value.toFixed(2) : value)} />
+            <Legend />
+            <Line
+              type="monotone"
+              dataKey="equity"
+              stroke="#c792ea"
+              name="Equity"
+              dot={false}
+              isAnimationActive={false}
+            />
+          </LineChart>
+        </ResponsiveContainer>
+      )}
     </div>
   );
 }

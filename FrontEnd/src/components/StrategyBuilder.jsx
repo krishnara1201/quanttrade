@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 
 const INDICATORS = [
   { id: 'sma', name: 'Simple Moving Average', params: ['period'] },
+  { id: 'ema', name: 'Exponential Moving Average', params: ['period'] },
   { id: 'rsi', name: 'RSI', params: ['period'] },
   { id: 'bb', name: 'Bollinger Bands', params: ['period', 'std_dev'] },
   { id: 'macd', name: 'MACD', params: ['fast', 'slow', 'signal'] },
@@ -82,6 +83,8 @@ export default function StrategyBuilder({ onSave, onCancel }) {
     indicators.forEach((ind) => {
       if (ind.type === 'sma') {
         parameters[ind.name] = ind.period;
+      } else if (ind.type === 'ema') {
+        parameters.ema_period = ind.period;
       } else if (ind.type === 'rsi') {
         parameters.rsi_period = ind.period;
       } else if (ind.type === 'bb') {
@@ -181,6 +184,15 @@ export default function StrategyBuilder({ onSave, onCancel }) {
               />
 
               {indicator.type === 'sma' && (
+                <input
+                  type="number"
+                  placeholder="Period"
+                  value={indicator.period}
+                  onChange={(e) => updateIndicator(idx, 'period', Number(e.target.value))}
+                />
+              )}
+
+              {indicator.type === 'ema' && (
                 <input
                   type="number"
                   placeholder="Period"

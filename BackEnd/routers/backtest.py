@@ -17,6 +17,8 @@ class BacktestRequest(BaseModel):
     start_date: str
     end_date: str
     initial_capital: float = 10000.0
+    commission_pct: float = 0.1
+    slippage_pct: float = 0.05
 
 @router.post("/run")
 async def run_backtest_endpoint(
@@ -31,6 +33,8 @@ async def run_backtest_endpoint(
         req.start_date,
         req.end_date,
         req.initial_capital,
+        req.commission_pct,
+        req.slippage_pct,
         db,
         user
     )
@@ -71,6 +75,7 @@ async def get_backtest_detail(
         'strategy_id': backtest.strategy_id,
         'metrics': backtest.results,
         'trades': backtest.trades,
-        'signals': backtest.trades,  # Simplified: trades contain entry/exit signals
+        'signals': backtest.signals,
+        'equity_curve': backtest.equity_curve,
         'created_at': backtest.created_at.isoformat(),
     }
