@@ -13,12 +13,18 @@ QuantTrade is a full-stack trading strategy backtesting platform: a FastAPI back
 cd BackEnd
 python -m venv .venv
 source .venv/bin/activate
-pip install fastapi uvicorn "sqlalchemy[asyncio]" asyncpg psycopg2-binary python-dotenv bcrypt passlib python-jose pandas numpy pydantic[email]
+pip install -r requirements.txt
 uvicorn app:app --reload
 ```
-There is no `requirements.txt` in the repo despite the README referencing one — install packages manually (imports across `app.py`/`database/`/`routers/`/`services/` show the set above) or create one if you add dependencies.
 
-There is no test suite for either the backend or frontend currently.
+### Tests
+```bash
+cd BackEnd
+pytest tests/ -v
+```
+Must be run from `BackEnd/` (or with `BackEnd` on `PYTHONPATH`) — `tests/__init__.py` relies on pytest's rootdir-relative import mode to resolve `from services...` imports; running `pytest BackEnd/tests` from the repo root will fail to import. There is no `pytest.ini`/`conftest.py` pinning this.
+
+Test coverage is currently limited to `services/strategy_executor.py` (`tests/test_strategy_executor.py`) — indicator correctness, position sizing/costs, and metrics, all unit-tested with hand-verified expected values (no mocks, no DB). There is no test suite for routers/services that touch the database, and no frontend test suite.
 
 ### Frontend (`FrontEnd/`)
 ```bash
@@ -48,9 +54,15 @@ JWT-based, via `python-jose`. `services/auth_service.py` centralizes token decod
 Every mutable resource chains back to a `User` via `owner_id`: `User` → `Project` (`owner_id`) → `Strategy` (`project_id`) → `BacktestResult` (`strategy_id`). There's no direct `owner_id` on `Strategy`/`BacktestResult`, so authorization checks walk the chain — e.g. `strategy.project.owner_id != user.id` (see `services/backtest_service.py`, `routers/strategies.py`, `routers/backtest.py`). Reuse this same walk-the-relationship-chain pattern for any new ownership check rather than adding a denormalized owner field.
 
 ### Strategy definition & execution
-A `Strategy.parameters` field stores a JSON string like `{"name", "parameters": {...indicator params...}, "rules": {"entry": "...", "exit": "..."}}`. `services/strategy_executor.py`'s `StrategyExecutor` computes indicators (SMA/EMA/RSI/Bollinger/MACD — though MACD is listed in `AVAILABLE_INDICATORS` but not actually implemented in `_calculate_indicators`) and evaluates entry/exit condition strings such as `"fast_ma > slow_ma"` **without `eval`** — it whitelists via regex and manually parses `column/number <op> column/number`. This is a deliberate security measure against code injection; any change to condition evaluation must preserve that no arbitrary expression can reach `eval`/`exec`.
+A `Strategy.parameters` field stores a JSON string like `{"name", "parameters": {...indicator params...}, "rules": {"entry": "...", "exit": "..."}}`. `services/strategy_executor.py`'s `StrategyExecutor` computes all five advertised indicators — SMA, EMA (`ema_period` → `ema`), RSI, Bollinger Bands, MACD (`macd_fast`/`macd_slow`/`macd_signal` → `macd`/`macd_signal_line`/`macd_hist`, built from `_calculate_ema` — reuse that helper rather than adding new `.ewm()` calls) — and evaluates entry/exit condition strings such as `"fast_ma > slow_ma"` **without `eval`** — it whitelists via regex and manually parses `column/number <op> column/number`. This is a deliberate security measure against code injection; any change to condition evaluation must preserve that no arbitrary expression can reach `eval`/`exec`. All five indicators are also selectable in the frontend's Strategy Builder (`FrontEnd/src/components/StrategyBuilder.jsx`) — keep the `INDICATORS` list, `handleSave`'s parameter mapping, and the engine's supported params in sync if you add another.
 
-`services/backtest_service.py` orchestrates a full backtest run: loads `MarketData` rows for a ticker/date range into a pandas `DataFrame`, runs them through `StrategyExecutor`, and persists a `BacktestResult` (metrics + trades as JSON columns).
+`_execute_trades` uses capital-based, all-in position sizing (max whole shares affordable, floor division after folding commission into the fill price — see the method for the exact formula) with configurable `commission_pct`/`slippage_pct` (defaults 0.1%/0.05%, passed from `BacktestRequest` down through `backtest_service.run_backtest`). It has no support for shorting, stop-loss/take-profit, or concurrent positions — one position at a time, long-only. `backtest()` returns `{'trades', 'metrics', 'signals', 'equity_curve'}`; `signals` and `equity_curve` are row-record lists (`{'date', ...}` per bar) built via the shared `_format_date` helper, and are persisted on `BacktestResult.signals`/`.equity_curve` (JSON columns).
+
+`_calculate_metrics` computes `total_return`/`return_pct`/`final_capital`/`win_rate`/`num_trades` plus `max_drawdown_pct` and `sharpe_ratio` (bar-over-bar equity returns × √252, assumes daily bars and 0% risk-free rate — not configurable). `final_capital`/`total_return`/`return_pct` prefer the equity curve's last value over the sum of realized exit P&L whenever the curve is non-empty, so an open position at the last bar is still reflected — don't revert this to realized-only math, it was a deliberate fix for a case where the two used to silently disagree.
+
+`services/backtest_service.py` orchestrates a full backtest run: loads `MarketData` rows for a ticker/date range into a pandas `DataFrame`, runs them through `StrategyExecutor`, and persists the resulting `BacktestResult`.
+
+**Known bug (pre-existing, not yet fixed):** `strategy.project.owner_id` / `backtest.strategy.project` ownership checks in `services/backtest_service.py` and `routers/backtest.py` lazily traverse SQLAlchemy relationships inside async request handlers with no eager-loading configured (`database/models.py` declares no `lazy="selectin"`, `connection.py` uses a plain `async_sessionmaker`). Against a real Postgres session this raises `MissingGreenlet` and surfaces as an uncaught 500 rather than the intended 400/403. Fix by adding `.options(selectinload(...))` to the relevant `select()` calls if you touch this path.
 
 `services/data_service.py` has incomplete/broken implementations (e.g. calls `.to_dataframe()` on a plain list of ORM objects, which doesn't exist) — treat it as unfinished scaffolding, not a working reference.
 
@@ -61,4 +73,4 @@ A `Strategy.parameters` field stores a JSON string like `{"name", "parameters": 
 - Page components under `src/pages/` correspond 1:1 with those routes.
 
 ### Data models (`BackEnd/database/models.py`)
-`User` 1—N `Project` 1—N `Strategy` 1—N `BacktestResult`. `MarketData` is independent (keyed by `ticker`+`date`, unique-constrained), not owned by a user — it's shared reference data that any authenticated user can query/upload/delete via `routers/data.py`.
+`User` 1—N `Project` 1—N `Strategy` 1—N `BacktestResult`. `MarketData` is independent (keyed by `ticker`+`date`, unique-constrained), not owned by a user — it's shared reference data that any authenticated user can query/upload/delete via `routers/data.py`. `BacktestResult` stores `results` (metrics), `trades`, `signals`, and `equity_curve` as JSON columns. There's no migration tooling (`init_db()` only runs `Base.metadata.create_all`, which won't alter an existing table) — if you add/change columns, the local dev DB's tables need to be dropped and recreated manually.
