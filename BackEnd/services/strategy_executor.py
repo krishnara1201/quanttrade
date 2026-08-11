@@ -183,38 +183,61 @@ class StrategyExecutor:
             print(f"Error evaluating condition '{condition}': {e}")
             return False
     
-    def _execute_trades(self, df: pd.DataFrame, initial_capital: float) -> List[Dict[str, Any]]:
-        """Execute trades based on signals"""
+    def _format_date(self, idx) -> str:
+        return idx.isoformat() if hasattr(idx, 'isoformat') else str(idx)
+
+    def _execute_trades(self, df: pd.DataFrame, initial_capital: float,
+                         commission_pct: float = 0.1, slippage_pct: float = 0.05):
+        """Execute trades based on signals using capital-based sizing with commission/slippage"""
         trades = []
-        position = None  # None or entry_price
-        
+        equity_curve = []
+        cash = initial_capital
+        shares = 0
+        entry_cost_basis = 0.0
+
         for i in range(len(df)):
             signal = df.iloc[i].get('signal', 0)
             close_price = df.iloc[i]['close']
-            timestamp = df.index[i] if hasattr(df.index[i], 'isoformat') else str(df.index[i])
-            
-            # Buy signal
-            if signal == 1 and position is None:
-                position = close_price
-                trades.append({
-                    'type': 'entry',
-                    'price': float(close_price),
-                    'date': timestamp,
-                    'size': 1,  # 1 share for simplicity
-                })
-            
-            # Sell signal
-            elif signal == -1 and position is not None:
+            timestamp = self._format_date(df.index[i])
+
+            if signal == 1 and shares == 0:
+                fill_price = close_price * (1 + slippage_pct / 100)
+                effective_price = fill_price * (1 + commission_pct / 100)
+                candidate_shares = int(cash // effective_price)
+                if candidate_shares > 0:
+                    commission = candidate_shares * fill_price * (commission_pct / 100)
+                    cost = candidate_shares * fill_price + commission
+                    shares = candidate_shares
+                    cash -= cost
+                    entry_cost_basis = cost
+                    trades.append({
+                        'type': 'entry',
+                        'price': float(fill_price),
+                        'date': timestamp,
+                        'size': shares,
+                    })
+
+            elif signal == -1 and shares > 0:
+                fill_price = close_price * (1 - slippage_pct / 100)
+                proceeds = shares * fill_price
+                commission = proceeds * (commission_pct / 100)
+                net_proceeds = proceeds - commission
+                pnl = net_proceeds - entry_cost_basis
+                cash += net_proceeds
                 trades.append({
                     'type': 'exit',
-                    'price': float(close_price),
+                    'price': float(fill_price),
                     'date': timestamp,
-                    'size': 1,
-                    'pnl': float((close_price - position) * 1),
+                    'size': shares,
+                    'pnl': float(pnl),
                 })
-                position = None
-        
-        return trades
+                shares = 0
+                entry_cost_basis = 0.0
+
+            equity = cash + (shares * close_price if shares > 0 else 0)
+            equity_curve.append({'date': timestamp, 'equity': float(equity)})
+
+        return trades, equity_curve
     
     def _calculate_metrics(self, df: pd.DataFrame, trades: List[Dict], initial_capital: float) -> Dict[str, Any]:
         """Calculate performance metrics"""

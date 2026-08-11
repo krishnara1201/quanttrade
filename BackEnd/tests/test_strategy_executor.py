@@ -75,3 +75,45 @@ def test_macd_matches_manual_ema_calc():
     pd.testing.assert_series_equal(df["macd"], expected_macd, check_names=False)
     pd.testing.assert_series_equal(df["macd_signal_line"], expected_signal, check_names=False)
     pd.testing.assert_series_equal(df["macd_hist"], expected_hist, check_names=False)
+
+
+def test_execute_trades_applies_capital_sizing_commission_and_slippage():
+    closes = [100, 100, 110]
+    df = make_price_df(closes)
+    df["signal"] = [0, 1, -1]
+    executor = make_executor()
+
+    trades, equity_curve = executor._execute_trades(
+        df, initial_capital=1000.0, commission_pct=1.0, slippage_pct=0.5
+    )
+
+    assert len(trades) == 2
+    entry, exit_ = trades
+
+    assert entry["type"] == "entry"
+    assert entry["size"] == 9
+    assert entry["price"] == pytest.approx(100.5, abs=1e-6)
+
+    assert exit_["type"] == "exit"
+    assert exit_["size"] == 9
+    assert exit_["price"] == pytest.approx(109.45, abs=1e-6)
+    assert exit_["pnl"] == pytest.approx(61.6545, abs=1e-3)
+
+    assert len(equity_curve) == 3
+    assert equity_curve[0]["equity"] == pytest.approx(1000.0, abs=1e-6)
+    assert equity_curve[1]["equity"] == pytest.approx(986.455, abs=1e-3)
+    assert equity_curve[2]["equity"] == pytest.approx(1061.6545, abs=1e-3)
+
+
+def test_execute_trades_skips_entry_when_cash_cannot_afford_one_share():
+    closes = [1000, 1000, 1100]
+    df = make_price_df(closes)
+    df["signal"] = [0, 1, -1]
+    executor = make_executor()
+
+    trades, equity_curve = executor._execute_trades(
+        df, initial_capital=500.0, commission_pct=1.0, slippage_pct=0.5
+    )
+
+    assert trades == []
+    assert all(pt["equity"] == pytest.approx(500.0) for pt in equity_curve)
