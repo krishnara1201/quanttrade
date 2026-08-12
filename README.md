@@ -58,12 +58,11 @@ After frontend dependency changes, also refresh the node_modules volume:
 ## 🚀 Quick Start (Manual, without Docker)
 
 ### Backend Setup
+Requires [uv](https://docs.astral.sh/uv/) (`pip install uv` or see its install docs).
 ```bash
 cd BackEnd
-python -m venv .venv
-source .venv/bin/activate  # On Windows: .venv\Scripts\activate
-pip install -r requirements.txt
-uvicorn app:app --reload
+uv sync
+uv run uvicorn app:app --reload
 ```
 
 ### Frontend Setup

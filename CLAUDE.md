@@ -9,23 +9,24 @@ QuantTrade is a full-stack trading strategy backtesting platform: a FastAPI back
 ## Commands
 
 ### Backend (`BackEnd/`)
+Dependencies are managed with [uv](https://docs.astral.sh/uv/) via `BackEnd/pyproject.toml`/`uv.lock` — there is no `requirements.txt` and no manually-created venv; `uv` creates and manages `BackEnd/.venv` itself from the lockfile.
 ```bash
 cd BackEnd
-python -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-uvicorn app:app --reload
+uv sync          # creates .venv and installs pinned deps + dev group (pytest et al.)
+uv run uvicorn app:app --reload
 ```
-Alternatively, run the full stack (Postgres included) via `docker compose up` from the repo root — see `README.md`'s Docker Setup section.
+`uv add <package>`/`uv remove <package>` (run from `BackEnd/`) update both `pyproject.toml` and `uv.lock` together — edit dependency versions through these rather than hand-editing `pyproject.toml`, so the lockfile never drifts out of sync. Runtime deps live under `[project.dependencies]`; test-only deps (`pytest`, `pytest-asyncio`, `aiosqlite`) live in the `dev` group under `[dependency-groups]` — add new deps to whichever one matches, e.g. `uv add --dev <package>` for a test-only dep.
+
+Alternatively, run the full stack (Postgres included) via `docker compose up` from the repo root — see `README.md`'s Docker Setup section. `BackEnd/Dockerfile` also uses `uv` (via the official `ghcr.io/astral-sh/uv` image, copied in as a static binary) and runs `uv sync --locked` at build time, so a dependency change needs `docker compose up --build` to take effect, same as before.
 
 ### Tests
 ```bash
 cd BackEnd
-pytest tests/ -v
+uv run pytest tests/ -v
 ```
 Must be run from `BackEnd/` (or with `BackEnd` on `PYTHONPATH`) — `tests/__init__.py` relies on pytest's rootdir-relative import mode to resolve `from services...` imports; running `pytest BackEnd/tests` from the repo root will fail to import. There is no `pytest.ini`/`conftest.py` pinning this.
 
-Test coverage: `services/strategy_executor.py` (`tests/test_strategy_executor.py`) — indicator correctness, position sizing/costs, and metrics, all unit-tested with hand-verified expected values (no mocks, no DB). `tests/test_backtest_ownership.py` and `tests/test_strategy_ownership.py` cover the ownership-check async regression (see below) against a real async session, using an in-memory `sqlite+aiosqlite` engine (dev-only deps `pytest-asyncio`/`aiosqlite`, pinned in `requirements.txt`) rather than mocks — `pytest.ini` sets `asyncio_default_fixture_loop_scope = function`. `tests/test_data_upload.py`, `tests/test_data_historical.py`, and `tests/test_data_import.py` cover `routers/data.py` the same way. There is otherwise no test suite for routers/services that touch the database, and no frontend test suite.
+Test coverage: `services/strategy_executor.py` (`tests/test_strategy_executor.py`) — indicator correctness, position sizing/costs, and metrics, all unit-tested with hand-verified expected values (no mocks, no DB). `tests/test_backtest_ownership.py` and `tests/test_strategy_ownership.py` cover the ownership-check async regression (see below) against a real async session, using an in-memory `sqlite+aiosqlite` engine (dev-only deps `pytest-asyncio`/`aiosqlite`, pinned in the `dev` group of `pyproject.toml`) rather than mocks — `pytest.ini` sets `asyncio_default_fixture_loop_scope = function`. `tests/test_data_upload.py`, `tests/test_data_historical.py`, and `tests/test_data_import.py` cover `routers/data.py` the same way. There is otherwise no test suite for routers/services that touch the database, and no frontend test suite.
 
 **SQLite tests can hide Postgres-only bugs — verify dialect-sensitive fixes against real Postgres too.** `test_backtest_ownership.py::test_run_backtest_queries_market_data_with_datetime_not_raw_string` exists because SQLite's `DateTime` bind processor passes a raw Python `str` through unchanged (so `MarketData.date >= "2024-01-01"` "works" against SQLite), while Postgres/asyncpg binds it as `::VARCHAR` and rejects `timestamp >= varchar` outright — a bug the SQLite-only suite could never catch by actually hitting Postgres. That test instead asserts on the *type* of the value SQLAlchemy binds into the compiled query (via `stmt.compile(compile_kwargs={"literal_binds": False}).params`), which is dialect-independent and catches the same class of bug. When a fix depends on Postgres-specific type strictness (as opposed to ORM-relationship behavior, which SQLite reproduces fine per the ownership-check regression below), don't trust a SQLite-only green suite — run `docker compose up` and exercise the real endpoint against the `postgres` service before calling it fixed.
 
