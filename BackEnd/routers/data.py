@@ -134,6 +134,7 @@ async def import_market_data_from_web(
     start_date: Optional[datetime] = None,
     end_date: Optional[datetime] = None,
     api_key: Optional[str] = None,
+    outputsize: str = "compact",
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -141,12 +142,17 @@ async def import_market_data_from_web(
     it, so a user can populate data by ticker symbol alone instead of sourcing
     a CSV themselves. Needs a free Alpha Vantage API key (no card required) —
     pass one via `api_key`, or set ALPHA_VANTAGE_API_KEY server-side; without
-    either, only Alpha Vantage's demo symbols (e.g. IBM) will work."""
+    either, only Alpha Vantage's demo symbols (e.g. IBM) will work.
+
+    Defaults to `outputsize=compact` (last ~100 daily bars) since Alpha
+    Vantage now gates `outputsize=full` behind a paid plan even for
+    TIME_SERIES_DAILY — pass `outputsize=full` explicitly if your key has
+    that entitlement."""
     key = api_key or os.getenv("ALPHA_VANTAGE_API_KEY", "demo")
     params = {
         "function": "TIME_SERIES_DAILY",
         "symbol": ticker,
-        "outputsize": "full",
+        "outputsize": outputsize,
         "apikey": key,
     }
 

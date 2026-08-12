@@ -114,8 +114,9 @@ export default function DataPage() {
               alphavantage.co
             </a>
             ) — paste it below and it's remembered on this device. Without a key, only
-            Alpha Vantage's demo symbol (IBM) will work. Leave the dates blank to pull full
-            available history.
+            Alpha Vantage's demo symbol (IBM) will work. Pulls the last ~100 daily bars
+            (Alpha Vantage's free tier no longer allows fetching full history); date filters
+            below just trim that window.
           </p>
           <form className="stack" onSubmit={handleWebImport}>
             <label className="field">
