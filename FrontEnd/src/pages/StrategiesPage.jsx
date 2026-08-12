@@ -158,6 +158,7 @@ export default function StrategiesPage() {
             onSave={handleSaveStrategy}
             onCancel={() => setShowBuilder(false)}
           />
+          {error && <div className="error-box" style={{ marginTop: '12px' }}>{error}</div>}
         </div>
       ) : (
         <>

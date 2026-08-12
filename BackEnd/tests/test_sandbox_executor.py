@@ -97,6 +97,17 @@ def test_dunder_attribute_access_rejected():
         check_ast_safety(code)
 
 
+def test_deeply_nested_expression_rejected_cleanly():
+    # Repeated unary `-` operators reliably blow Python's recursion limit
+    # inside ast.NodeVisitor.generic_visit (verified directly against
+    # _SafetyVisitor().visit(ast.parse(code)) before wrapping the fix around
+    # it) without also tripping the parser's own stack limit the way deeply
+    # nested parens do.
+    code = "def generate_signals(df):\n    return " + "-" * 2000 + "1\n"
+    with pytest.raises(SandboxValidationError, match="too deeply nested"):
+        check_ast_safety(code)
+
+
 @pytest.mark.parametrize("call", ["eval('1')", "exec('1')", "open('/etc/passwd')"])
 def test_eval_exec_open_calls_rejected(call):
     code = (

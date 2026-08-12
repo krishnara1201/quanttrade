@@ -5,9 +5,9 @@ import {
   bracketMatching,
   indentOnInput,
   syntaxHighlighting,
-  defaultHighlightStyle,
+  HighlightStyle,
 } from '@codemirror/language';
-import { defaultKeymap, history, historyKeymap } from '@codemirror/commands';
+import { defaultKeymap, history, historyKeymap, indentWithTab } from '@codemirror/commands';
 import {
   closeBrackets,
   closeBracketsKeymap,
@@ -16,6 +16,7 @@ import {
 } from '@codemirror/autocomplete';
 import { linter, lintGutter } from '@codemirror/lint';
 import { python } from '@codemirror/lang-python';
+import { tags as t } from '@lezer/highlight';
 import { validateCode } from '../api/strategies.js';
 
 const COMPLETIONS = [
@@ -63,7 +64,19 @@ const codeValidationLinter = linter(async (view) => {
     const line = doc.line(lineNum);
     return { from: line.from, to: line.to, severity: 'error', message: v.message };
   });
-}, { delay: 500 });
+}, { delay: 800 });
+
+const editorHighlightStyle = HighlightStyle.define([
+  { tag: t.keyword, color: 'var(--accent-2)' },
+  { tag: [t.function(t.variableName), t.function(t.definition(t.variableName)), t.definition(t.variableName)], color: 'var(--accent)' },
+  { tag: t.variableName, color: 'var(--fg)' },
+  { tag: t.string, color: 'var(--accent)' },
+  { tag: t.number, color: 'var(--accent-2)' },
+  { tag: t.bool, color: 'var(--accent-2)' },
+  { tag: t.comment, color: 'var(--muted)', fontStyle: 'italic' },
+  { tag: t.operator, color: 'var(--fg)' },
+  { tag: t.propertyName, color: 'var(--accent-2)' },
+]);
 
 const editorTheme = EditorView.theme({
   '&': {
@@ -79,6 +92,7 @@ const editorTheme = EditorView.theme({
     caretColor: 'var(--fg)',
     minHeight: '320px',
   },
+  '.cm-scroller': { maxHeight: '60vh', overflow: 'auto' },
   '.cm-gutters': {
     backgroundColor: 'var(--panel)',
     color: 'var(--muted)',
@@ -115,12 +129,12 @@ export default function CodeEditor({ value, onChange }) {
         bracketMatching(),
         closeBrackets(),
         indentOnInput(),
-        syntaxHighlighting(defaultHighlightStyle, { fallback: true }),
+        syntaxHighlighting(editorHighlightStyle, { fallback: true }),
         python(),
         autocompletion({ override: [pythonCompletions] }),
         lintGutter(),
         codeValidationLinter,
-        keymap.of([...closeBracketsKeymap, ...defaultKeymap, ...historyKeymap]),
+        keymap.of([...closeBracketsKeymap, ...defaultKeymap, ...historyKeymap, indentWithTab]),
         editorTheme,
         EditorView.updateListener.of((update) => {
           if (update.docChanged) {

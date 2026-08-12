@@ -147,7 +147,13 @@ def check_ast_safety(code: str) -> None:
     )
 
     visitor = _SafetyVisitor()
-    visitor.visit(tree)
+    try:
+        visitor.visit(tree)
+    except RecursionError as e:
+        raise SandboxValidationError(
+            "code is too deeply nested to validate",
+            violations=[{"line": 1, "message": "code is too deeply nested to validate"}],
+        ) from e
 
     violations = list(visitor.violations)
     if not has_entrypoint:
