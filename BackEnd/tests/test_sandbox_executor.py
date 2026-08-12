@@ -47,6 +47,46 @@ def test_disallowed_import_rejected_by_ast_check():
         check_ast_safety(code)
 
 
+def test_disallowed_import_violation_includes_line_number():
+    code = (
+        "def generate_signals(df):\n"
+        "    return df['close'] * 0\n"
+        "import os\n"
+    )
+    with pytest.raises(SandboxValidationError) as exc_info:
+        check_ast_safety(code)
+    assert exc_info.value.violations == [
+        {"line": 3, "message": "import of 'os' is not allowed"},
+    ]
+
+
+def test_missing_generate_signals_violation_anchors_to_line_one():
+    code = "x = 1\n"
+    with pytest.raises(SandboxValidationError) as exc_info:
+        check_ast_safety(code)
+    assert exc_info.value.violations == [
+        {"line": 1, "message": "code must define a top-level function named 'generate_signals'"},
+    ]
+
+
+def test_syntax_error_violation_includes_line_number():
+    code = "def generate_signals(df):\n    return df['close'] * 0\nif\n"
+    with pytest.raises(SandboxValidationError) as exc_info:
+        check_ast_safety(code)
+    assert exc_info.value.violations[0]["line"] == 3
+    assert "Syntax error" in exc_info.value.violations[0]["message"]
+
+
+def test_validation_error_message_unchanged_for_existing_callers():
+    code = (
+        "import os\n"
+        "def generate_signals(df):\n"
+        "    return df['close'] * 0\n"
+    )
+    with pytest.raises(SandboxValidationError, match="import of 'os' is not allowed"):
+        check_ast_safety(code)
+
+
 def test_dunder_attribute_access_rejected():
     code = (
         "def generate_signals(df):\n"

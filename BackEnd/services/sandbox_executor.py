@@ -52,7 +52,17 @@ class SandboxError(Exception):
 
 
 class SandboxValidationError(SandboxError):
-    """Code failed the pre-execution safety check (syntax or disallowed construct)."""
+    """Code failed the pre-execution safety check (syntax or disallowed construct).
+
+    `.violations` is a list of {"line": int | None, "message": str} dicts for
+    structured, line-anchored consumers (e.g. editor diagnostics). Falls back
+    to a single {"line": None, "message": str(self)} entry when constructed
+    without one, so callers that just want str(exc) are unaffected.
+    """
+
+    def __init__(self, message, violations=None):
+        super().__init__(message)
+        self.violations = violations if violations is not None else [{"line": None, "message": message}]
 
 
 class SandboxTimeoutError(SandboxError):
@@ -73,34 +83,49 @@ class SandboxOutputError(SandboxError):
 
 class _SafetyVisitor(ast.NodeVisitor):
     def __init__(self):
-        self.violations = []
+        self.violations = []  # list of {"line": int, "message": str}
 
     def visit_Import(self, node):
         for alias in node.names:
             root = alias.name.split(".")[0]
             if root not in ALLOWED_IMPORT_ROOTS:
-                self.violations.append(f"import of {alias.name!r} is not allowed")
+                self.violations.append({
+                    "line": node.lineno,
+                    "message": f"import of {alias.name!r} is not allowed",
+                })
         self.generic_visit(node)
 
     def visit_ImportFrom(self, node):
         root = (node.module or "").split(".")[0]
         if root not in ALLOWED_IMPORT_ROOTS:
-            self.violations.append(f"import of {node.module!r} is not allowed")
+            self.violations.append({
+                "line": node.lineno,
+                "message": f"import of {node.module!r} is not allowed",
+            })
         self.generic_visit(node)
 
     def visit_Call(self, node):
         if isinstance(node.func, ast.Name) and node.func.id in DISALLOWED_CALL_NAMES:
-            self.violations.append(f"call to {node.func.id}() is not allowed")
+            self.violations.append({
+                "line": node.lineno,
+                "message": f"call to {node.func.id}() is not allowed",
+            })
         self.generic_visit(node)
 
     def visit_Name(self, node):
         if node.id.startswith("__") and node.id.endswith("__"):
-            self.violations.append(f"reference to {node.id!r} is not allowed")
+            self.violations.append({
+                "line": node.lineno,
+                "message": f"reference to {node.id!r} is not allowed",
+            })
         self.generic_visit(node)
 
     def visit_Attribute(self, node):
         if node.attr.startswith("__") and node.attr.endswith("__"):
-            self.violations.append(f"attribute access to {node.attr!r} is not allowed")
+            self.violations.append({
+                "line": node.lineno,
+                "message": f"attribute access to {node.attr!r} is not allowed",
+            })
         self.generic_visit(node)
 
 
@@ -111,7 +136,10 @@ def check_ast_safety(code: str) -> None:
     try:
         tree = ast.parse(code)
     except SyntaxError as e:
-        raise SandboxValidationError(f"Syntax error: {e}") from e
+        raise SandboxValidationError(
+            f"Syntax error: {e}",
+            violations=[{"line": e.lineno, "message": f"Syntax error: {e.msg}"}],
+        ) from e
 
     has_entrypoint = any(
         isinstance(node, ast.FunctionDef) and node.name == "generate_signals"
@@ -123,10 +151,16 @@ def check_ast_safety(code: str) -> None:
 
     violations = list(visitor.violations)
     if not has_entrypoint:
-        violations.insert(0, "code must define a top-level function named 'generate_signals'")
+        violations.insert(0, {
+            "line": 1,
+            "message": "code must define a top-level function named 'generate_signals'",
+        })
 
     if violations:
-        raise SandboxValidationError("; ".join(violations))
+        raise SandboxValidationError(
+            "; ".join(v["message"] for v in violations),
+            violations=violations,
+        )
 
 
 def _limit_resources(mem_limit_mb: int, cpu_limit_s: int):
