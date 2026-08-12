@@ -20,27 +20,39 @@ AVAILABLE_INDICATORS = {
 class StrategyExecutor:
     """Executes a strategy on historical market data"""
     
-    def __init__(self, strategy_config: str):
+    def __init__(self, strategy_config: str, code: str = None):
         """
         Args:
-            strategy_config: JSON string with strategy definition
+            strategy_config: JSON string (or dict) with strategy definition
+            code: Python source for a 'custom_code' mode strategy (see
+                config['mode']); a generate_signals(df) function evaluated
+                in services.sandbox_executor in place of _calculate_indicators
+                + the entry/exit condition loop.
         """
         try:
             self.config = json.loads(strategy_config) if isinstance(strategy_config, str) else strategy_config
         except json.JSONDecodeError as e:
             raise ValueError(f"Invalid strategy configuration: {e}")
-    
+        self.code = code
+
     def validate(self) -> bool:
         """Validate strategy configuration"""
-        required_fields = ['name', 'parameters', 'rules']
-        for field in required_fields:
-            if field not in self.config:
-                raise ValueError(f"Missing required field: {field}")
-        
-        rules = self.config.get('rules', {})
-        if 'entry' not in rules or 'exit' not in rules:
-            raise ValueError("Strategy must define 'entry' and 'exit' rules")
-        
+        if 'name' not in self.config:
+            raise ValueError("Missing required field: name")
+
+        mode = self.config.get('mode', 'rules')
+        if mode == 'custom_code':
+            if not self.code or not self.code.strip():
+                raise ValueError("Custom-code strategy requires non-empty 'code'")
+        elif mode == 'rules':
+            if 'parameters' not in self.config:
+                raise ValueError("Missing required field: parameters")
+            rules = self.config.get('rules', {})
+            if 'entry' not in rules or 'exit' not in rules:
+                raise ValueError("Strategy must define 'entry' and 'exit' rules")
+        else:
+            raise ValueError(f"Unknown strategy mode: {mode!r}")
+
         return True
     
     def backtest(self, df: pd.DataFrame, initial_capital: float = 10000.0,
@@ -60,18 +72,27 @@ class StrategyExecutor:
         self.validate()
 
         df = df.copy()
-        params = self.config.get('parameters', {})
-        rules = self.config.get('rules', {})
+        mode = self.config.get('mode', 'rules')
 
-        self._calculate_indicators(df, params)
+        if mode == 'custom_code':
+            from services.sandbox_executor import run_custom_strategy, SandboxError
+            try:
+                df['signal'] = run_custom_strategy(self.code, df)
+            except SandboxError as e:
+                raise ValueError(str(e))
+        else:
+            params = self.config.get('parameters', {})
+            rules = self.config.get('rules', {})
 
-        df['signal'] = 0
+            self._calculate_indicators(df, params)
 
-        for i in range(1, len(df)):
-            if self._evaluate_condition(rules['entry'], df, i):
-                df.iloc[i, df.columns.get_loc('signal')] = 1
-            elif self._evaluate_condition(rules['exit'], df, i):
-                df.iloc[i, df.columns.get_loc('signal')] = -1
+            df['signal'] = 0
+
+            for i in range(1, len(df)):
+                if self._evaluate_condition(rules['entry'], df, i):
+                    df.iloc[i, df.columns.get_loc('signal')] = 1
+                elif self._evaluate_condition(rules['exit'], df, i):
+                    df.iloc[i, df.columns.get_loc('signal')] = -1
 
         trades, equity_curve = self._execute_trades(df, initial_capital, commission_pct, slippage_pct)
         metrics = self._calculate_metrics(df, trades, initial_capital, equity_curve)

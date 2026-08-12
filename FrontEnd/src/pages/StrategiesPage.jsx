@@ -101,11 +101,16 @@ export default function StrategiesPage() {
   const handleSaveStrategy = async (strategyConfig) => {
     setError('');
     try {
+      const parameters = strategyConfig.mode === 'custom_code'
+        ? { name: strategyConfig.name, mode: 'custom_code' }
+        : { name: strategyConfig.name, mode: 'rules', parameters: strategyConfig.parameters, rules: strategyConfig.rules };
+
       const created = await strategiesApi.createStrategy({
         name: strategyConfig.name,
         status: 'draft',
         project_id: Number(projectId),
-        parameters: JSON.stringify(strategyConfig),
+        parameters: JSON.stringify(parameters),
+        ...(strategyConfig.mode === 'custom_code' ? { code: strategyConfig.code } : {}),
       });
       setStrategies((prev) => [...prev, created]);
       setShowBuilder(false);
@@ -159,7 +164,7 @@ export default function StrategiesPage() {
           <div className="layout two-cols">
             <div className="card">
               <h3>Create a new strategy</h3>
-              <p className="muted">Use our visual builder to create strategies without writing code.</p>
+              <p className="muted">Build strategies visually, or write custom Python signal logic.</p>
               <button className="primary-btn" onClick={() => setShowBuilder(true)}>
                 Open Strategy Builder
               </button>
@@ -189,8 +194,14 @@ export default function StrategiesPage() {
                           <span className="chip">{s.status || 'draft'}</span>
                         </div>
                         <p className="muted">
-                          {config.rules?.entry && `Entry: ${config.rules.entry}`}
-                          {config.rules?.exit && ` • Exit: ${config.rules.exit}`}
+                          {config.mode === 'custom_code'
+                            ? 'Custom Python strategy'
+                            : (
+                              <>
+                                {config.rules?.entry && `Entry: ${config.rules.entry}`}
+                                {config.rules?.exit && ` • Exit: ${config.rules.exit}`}
+                              </>
+                            )}
                         </p>
                       </div>
                       <Link to={`/strategies/${s.id}/backtest`} className="ghost-btn">Results</Link>

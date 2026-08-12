@@ -48,12 +48,24 @@ const STRATEGY_TEMPLATES = [
   },
 ];
 
+const CUSTOM_CODE_TEMPLATE = `def generate_signals(df):
+    # df has columns: open, high, low, close, volume, indexed by date.
+    # Return a pandas Series aligned to df.index with values:
+    #   1  = enter a position
+    #  -1  = exit the position
+    #   0  = hold
+    sma20 = df['close'].rolling(20).mean()
+    return (df['close'] > sma20).astype(int)
+`;
+
 export default function StrategyBuilder({ onSave, onCancel }) {
+  const [mode, setMode] = useState('rules');
   const [strategyName, setStrategyName] = useState('');
   const [selectedTemplate, setSelectedTemplate] = useState(null);
   const [indicators, setIndicators] = useState([]);
   const [entryRule, setEntryRule] = useState({ left: '', operator: '>', right: '' });
   const [exitRule, setExitRule] = useState({ left: '', operator: '<', right: '' });
+  const [code, setCode] = useState(CUSTOM_CODE_TEMPLATE);
 
   const applyTemplate = (template) => {
     setStrategyName(template.name);
@@ -78,6 +90,11 @@ export default function StrategyBuilder({ onSave, onCancel }) {
   };
 
   const handleSave = () => {
+    if (mode === 'custom_code') {
+      onSave({ name: strategyName, mode: 'custom_code', code });
+      return;
+    }
+
     // Build parameters object
     const parameters = {};
     indicators.forEach((ind) => {
@@ -103,13 +120,7 @@ export default function StrategyBuilder({ onSave, onCancel }) {
       exit: `${exitRule.left} ${exitRule.operator} ${exitRule.right}`,
     };
 
-    const strategyConfig = {
-      name: strategyName,
-      parameters,
-      rules,
-    };
-
-    onSave(strategyConfig);
+    onSave({ name: strategyName, mode: 'rules', parameters, rules });
   };
 
   const availableVariables = [
@@ -122,6 +133,10 @@ export default function StrategyBuilder({ onSave, onCancel }) {
     ...indicators.filter((i) => i.type === 'rsi').map(() => 'rsi'),
   ];
 
+  const canSave = mode === 'custom_code'
+    ? Boolean(strategyName && code.trim())
+    : Boolean(strategyName);
+
   return (
     <div className="strategy-builder">
       <div className="builder-header">
@@ -129,20 +144,23 @@ export default function StrategyBuilder({ onSave, onCancel }) {
         <button className="ghost-btn" onClick={onCancel}>Cancel</button>
       </div>
 
-      {/* Templates */}
+      {/* Mode toggle */}
       <div className="section">
-        <h4>Start from a template</h4>
-        <div className="template-grid">
-          {STRATEGY_TEMPLATES.map((template) => (
-            <div
-              key={template.name}
-              className={`template-card ${selectedTemplate === template.name ? 'selected' : ''}`}
-              onClick={() => applyTemplate(template)}
-            >
-              <div className="template-name">{template.name}</div>
-              <p className="template-desc">{template.description}</p>
-            </div>
-          ))}
+        <div className="mode-toggle">
+          <button
+            type="button"
+            className={mode === 'rules' ? 'primary-btn' : 'ghost-btn'}
+            onClick={() => setMode('rules')}
+          >
+            Visual Builder
+          </button>
+          <button
+            type="button"
+            className={mode === 'custom_code' ? 'primary-btn' : 'ghost-btn'}
+            onClick={() => setMode('custom_code')}
+          >
+            Custom Python Code
+          </button>
         </div>
       </div>
 
@@ -159,147 +177,185 @@ export default function StrategyBuilder({ onSave, onCancel }) {
         </label>
       </div>
 
-      {/* Indicators */}
-      <div className="section">
-        <div className="section-head">
-          <h4>Indicators</h4>
-          <button className="ghost-btn" onClick={addIndicator}>+ Add Indicator</button>
+      {mode === 'custom_code' ? (
+        <div className="section">
+          <h4>Custom Python Code</h4>
+          <p className="muted">
+            Define a <code>generate_signals(df)</code> function. Available columns: <code>open</code>,{' '}
+            <code>high</code>, <code>low</code>, <code>close</code>, <code>volume</code>. <code>pd</code> and{' '}
+            <code>np</code> are available; other imports aren't allowed. Code runs in a sandboxed process with a
+            resource limit and a timeout, so keep it simple and avoid unbounded loops.
+          </p>
+          <textarea
+            className="code-editor"
+            rows={18}
+            spellCheck={false}
+            value={code}
+            onChange={(e) => setCode(e.target.value)}
+          />
         </div>
-        <div className="indicators-list">
-          {indicators.map((indicator, idx) => (
-            <div key={idx} className="indicator-row">
+      ) : (
+        <>
+          {/* Templates */}
+          <div className="section">
+            <h4>Start from a template</h4>
+            <div className="template-grid">
+              {STRATEGY_TEMPLATES.map((template) => (
+                <div
+                  key={template.name}
+                  className={`template-card ${selectedTemplate === template.name ? 'selected' : ''}`}
+                  onClick={() => applyTemplate(template)}
+                >
+                  <div className="template-name">{template.name}</div>
+                  <p className="template-desc">{template.description}</p>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* Indicators */}
+          <div className="section">
+            <div className="section-head">
+              <h4>Indicators</h4>
+              <button className="ghost-btn" onClick={addIndicator}>+ Add Indicator</button>
+            </div>
+            <div className="indicators-list">
+              {indicators.map((indicator, idx) => (
+                <div key={idx} className="indicator-row">
+                  <select
+                    value={indicator.type}
+                    onChange={(e) => updateIndicator(idx, 'type', e.target.value)}
+                  >
+                    {INDICATORS.map((ind) => (
+                      <option key={ind.id} value={ind.id}>{ind.name}</option>
+                    ))}
+                  </select>
+
+                  <input
+                    placeholder="Variable name (e.g., fast_ma)"
+                    value={indicator.name}
+                    onChange={(e) => updateIndicator(idx, 'name', e.target.value)}
+                  />
+
+                  {indicator.type === 'sma' && (
+                    <input
+                      type="number"
+                      placeholder="Period"
+                      value={indicator.period}
+                      onChange={(e) => updateIndicator(idx, 'period', Number(e.target.value))}
+                    />
+                  )}
+
+                  {indicator.type === 'ema' && (
+                    <input
+                      type="number"
+                      placeholder="Period"
+                      value={indicator.period}
+                      onChange={(e) => updateIndicator(idx, 'period', Number(e.target.value))}
+                    />
+                  )}
+
+                  {indicator.type === 'rsi' && (
+                    <input
+                      type="number"
+                      placeholder="Period"
+                      value={indicator.period}
+                      onChange={(e) => updateIndicator(idx, 'period', Number(e.target.value))}
+                    />
+                  )}
+
+                  {indicator.type === 'bb' && (
+                    <>
+                      <input
+                        type="number"
+                        placeholder="Period"
+                        value={indicator.period}
+                        onChange={(e) => updateIndicator(idx, 'period', Number(e.target.value))}
+                      />
+                      <input
+                        type="number"
+                        placeholder="Std Dev"
+                        value={indicator.std_dev || 2}
+                        onChange={(e) => updateIndicator(idx, 'std_dev', Number(e.target.value))}
+                      />
+                    </>
+                  )}
+
+                  <button className="icon-btn" onClick={() => removeIndicator(idx)}>🗑️</button>
+                </div>
+              ))}
+              {indicators.length === 0 && <p className="muted">No indicators added yet. Click "Add Indicator" to start.</p>}
+            </div>
+          </div>
+
+          {/* Entry Rule */}
+          <div className="section">
+            <h4>Entry Rule (When to Buy)</h4>
+            <div className="rule-builder">
               <select
-                value={indicator.type}
-                onChange={(e) => updateIndicator(idx, 'type', e.target.value)}
+                value={entryRule.left}
+                onChange={(e) => setEntryRule({ ...entryRule, left: e.target.value })}
               >
-                {INDICATORS.map((ind) => (
-                  <option key={ind.id} value={ind.id}>{ind.name}</option>
+                <option value="">Select...</option>
+                {availableVariables.map((v) => (
+                  <option key={v} value={v}>{v}</option>
+                ))}
+              </select>
+
+              <select
+                value={entryRule.operator}
+                onChange={(e) => setEntryRule({ ...entryRule, operator: e.target.value })}
+              >
+                {COMPARISONS.map((c) => (
+                  <option key={c.id} value={c.id}>{c.label}</option>
                 ))}
               </select>
 
               <input
-                placeholder="Variable name (e.g., fast_ma)"
-                value={indicator.name}
-                onChange={(e) => updateIndicator(idx, 'name', e.target.value)}
+                placeholder="Value or variable"
+                value={entryRule.right}
+                onChange={(e) => setEntryRule({ ...entryRule, right: e.target.value })}
               />
-
-              {indicator.type === 'sma' && (
-                <input
-                  type="number"
-                  placeholder="Period"
-                  value={indicator.period}
-                  onChange={(e) => updateIndicator(idx, 'period', Number(e.target.value))}
-                />
-              )}
-
-              {indicator.type === 'ema' && (
-                <input
-                  type="number"
-                  placeholder="Period"
-                  value={indicator.period}
-                  onChange={(e) => updateIndicator(idx, 'period', Number(e.target.value))}
-                />
-              )}
-
-              {indicator.type === 'rsi' && (
-                <input
-                  type="number"
-                  placeholder="Period"
-                  value={indicator.period}
-                  onChange={(e) => updateIndicator(idx, 'period', Number(e.target.value))}
-                />
-              )}
-
-              {indicator.type === 'bb' && (
-                <>
-                  <input
-                    type="number"
-                    placeholder="Period"
-                    value={indicator.period}
-                    onChange={(e) => updateIndicator(idx, 'period', Number(e.target.value))}
-                  />
-                  <input
-                    type="number"
-                    placeholder="Std Dev"
-                    value={indicator.std_dev || 2}
-                    onChange={(e) => updateIndicator(idx, 'std_dev', Number(e.target.value))}
-                  />
-                </>
-              )}
-
-              <button className="icon-btn" onClick={() => removeIndicator(idx)}>🗑️</button>
             </div>
-          ))}
-          {indicators.length === 0 && <p className="muted">No indicators added yet. Click "Add Indicator" to start.</p>}
-        </div>
-      </div>
+          </div>
 
-      {/* Entry Rule */}
-      <div className="section">
-        <h4>Entry Rule (When to Buy)</h4>
-        <div className="rule-builder">
-          <select
-            value={entryRule.left}
-            onChange={(e) => setEntryRule({ ...entryRule, left: e.target.value })}
-          >
-            <option value="">Select...</option>
-            {availableVariables.map((v) => (
-              <option key={v} value={v}>{v}</option>
-            ))}
-          </select>
+          {/* Exit Rule */}
+          <div className="section">
+            <h4>Exit Rule (When to Sell)</h4>
+            <div className="rule-builder">
+              <select
+                value={exitRule.left}
+                onChange={(e) => setExitRule({ ...exitRule, left: e.target.value })}
+              >
+                <option value="">Select...</option>
+                {availableVariables.map((v) => (
+                  <option key={v} value={v}>{v}</option>
+                ))}
+              </select>
 
-          <select
-            value={entryRule.operator}
-            onChange={(e) => setEntryRule({ ...entryRule, operator: e.target.value })}
-          >
-            {COMPARISONS.map((c) => (
-              <option key={c.id} value={c.id}>{c.label}</option>
-            ))}
-          </select>
+              <select
+                value={exitRule.operator}
+                onChange={(e) => setExitRule({ ...exitRule, operator: e.target.value })}
+              >
+                {COMPARISONS.map((c) => (
+                  <option key={c.id} value={c.id}>{c.label}</option>
+                ))}
+              </select>
 
-          <input
-            placeholder="Value or variable"
-            value={entryRule.right}
-            onChange={(e) => setEntryRule({ ...entryRule, right: e.target.value })}
-          />
-        </div>
-      </div>
-
-      {/* Exit Rule */}
-      <div className="section">
-        <h4>Exit Rule (When to Sell)</h4>
-        <div className="rule-builder">
-          <select
-            value={exitRule.left}
-            onChange={(e) => setExitRule({ ...exitRule, left: e.target.value })}
-          >
-            <option value="">Select...</option>
-            {availableVariables.map((v) => (
-              <option key={v} value={v}>{v}</option>
-            ))}
-          </select>
-
-          <select
-            value={exitRule.operator}
-            onChange={(e) => setExitRule({ ...exitRule, operator: e.target.value })}
-          >
-            {COMPARISONS.map((c) => (
-              <option key={c.id} value={c.id}>{c.label}</option>
-            ))}
-          </select>
-
-          <input
-            placeholder="Value or variable"
-            value={exitRule.right}
-            onChange={(e) => setExitRule({ ...exitRule, right: e.target.value })}
-          />
-        </div>
-      </div>
+              <input
+                placeholder="Value or variable"
+                value={exitRule.right}
+                onChange={(e) => setExitRule({ ...exitRule, right: e.target.value })}
+              />
+            </div>
+          </div>
+        </>
+      )}
 
       {/* Actions */}
       <div className="builder-actions">
         <button className="ghost-btn" onClick={onCancel}>Cancel</button>
-        <button className="primary-btn" onClick={handleSave} disabled={!strategyName}>
+        <button className="primary-btn" onClick={handleSave} disabled={!canSave}>
           Save Strategy
         </button>
       </div>

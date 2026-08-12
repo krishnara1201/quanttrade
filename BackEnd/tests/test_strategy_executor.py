@@ -186,6 +186,38 @@ def test_sharpe_ratio_zero_when_no_volatility():
     assert metrics["max_drawdown_pct"] == 0.0
 
 
+def test_backtest_custom_code_mode_reuses_execute_trades_and_metrics():
+    closes = [100, 101, 99, 102, 105, 103, 108]
+    df = make_price_df(closes)
+    code = (
+        "def generate_signals(df):\n"
+        "    up = (df['close'] > df['close'].shift(1)).astype(int)\n"
+        "    down = (df['close'] < df['close'].shift(1)).astype(int)\n"
+        "    return up - down\n"
+    )
+    executor = StrategyExecutor({"name": "custom", "mode": "custom_code"}, code=code)
+
+    result = executor.backtest(df, initial_capital=1000.0, commission_pct=0.1, slippage_pct=0.05)
+
+    assert set(result.keys()) == {"trades", "metrics", "signals", "equity_curve"}
+    assert len(result["signals"]) == len(closes)
+    assert len(result["equity_curve"]) == len(closes)
+    assert any(row["signal"] != 0 for row in result["signals"])
+    assert len(result["trades"]) >= 1
+
+
+def test_validate_rejects_custom_code_mode_without_code():
+    executor = StrategyExecutor({"name": "custom", "mode": "custom_code"})
+    with pytest.raises(ValueError):
+        executor.validate()
+
+
+def test_validate_still_requires_rules_for_default_mode():
+    executor = StrategyExecutor({"name": "test"})
+    with pytest.raises(ValueError):
+        executor.validate()
+
+
 def test_metrics_use_equity_curve_final_value_when_position_still_open():
     # Entry rule fires on bar 1 and never exits (all closes positive), so trades
     # contains only an ENTRY with no matching EXIT. total_return/final_capital

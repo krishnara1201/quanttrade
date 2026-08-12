@@ -69,7 +69,7 @@ async def run_backtest(strategy_id: int, ticker: str, start_date: str, end_date:
     
     # Execute strategy
     try:
-        executor = StrategyExecutor(strategy.parameters)
+        executor = StrategyExecutor(strategy.parameters, code=strategy.code)
         backtest_results = executor.backtest(
             df, initial_capital=initial_capital,
             commission_pct=commission_pct, slippage_pct=slippage_pct
