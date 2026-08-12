@@ -7,6 +7,7 @@ import AuthPage from './pages/AuthPage.jsx';
 import ProjectsPage from './pages/ProjectsPage.jsx';
 import StrategiesPage from './pages/StrategiesPage.jsx';
 import BacktestResultsPage from './pages/BacktestResultsPage.jsx';
+import DataPage from './pages/DataPage.jsx';
 
 export default function App() {
   return (
@@ -20,6 +21,14 @@ export default function App() {
           element={(
             <ProtectedRoute>
               <ProjectsPage />
+            </ProtectedRoute>
+          )}
+        />
+        <Route
+          path="/data"
+          element={(
+            <ProtectedRoute>
+              <DataPage />
             </ProtectedRoute>
           )}
         />

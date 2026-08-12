@@ -2,7 +2,21 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import * as strategiesApi from '../api/strategies.js';
 import * as backtestApi from '../api/backtest.js';
+import * as dataApi from '../api/data.js';
 import StrategyBuilder from '../components/StrategyBuilder.jsx';
+
+function toDateInputValue(isoString) {
+  return isoString ? isoString.slice(0, 10) : '';
+}
+
+function clampDate(value, minIso, maxIso) {
+  const min = toDateInputValue(minIso);
+  const max = toDateInputValue(maxIso);
+  if (!value) return min || value;
+  if (min && value < min) return min;
+  if (max && value > max) return max;
+  return value;
+}
 
 export default function StrategiesPage() {
   const { projectId } = useParams();
@@ -12,12 +26,15 @@ export default function StrategiesPage() {
   const [showBuilder, setShowBuilder] = useState(false);
   const [selectedStrategyId, setSelectedStrategyId] = useState(null);
   const [backtestForm, setBacktestForm] = useState({
-    ticker: 'AAPL',
+    ticker: '',
     startDate: '2023-01-01',
     endDate: '2024-01-01',
     initialCapital: 10000,
   });
   const [backtestLoading, setBacktestLoading] = useState(false);
+  const [tickers, setTickers] = useState([]);
+  const [tickersLoading, setTickersLoading] = useState(true);
+  const [tickerRange, setTickerRange] = useState(null);
 
   const load = async () => {
     setLoading(true);
@@ -35,6 +52,47 @@ export default function StrategiesPage() {
   useEffect(() => {
     load();
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    const loadTickers = async () => {
+      setTickersLoading(true);
+      try {
+        const list = await dataApi.getTickers();
+        setTickers(list || []);
+        setBacktestForm((prev) => (prev.ticker ? prev : { ...prev, ticker: (list || [])[0] || '' }));
+      } catch (err) {
+        setError(err?.response?.data?.detail || 'Unable to load tickers');
+      } finally {
+        setTickersLoading(false);
+      }
+    };
+    loadTickers();
+  }, []);
+
+  useEffect(() => {
+    if (!backtestForm.ticker) {
+      setTickerRange(null);
+      return;
+    }
+    let cancelled = false;
+    dataApi
+      .getTickerRange(backtestForm.ticker)
+      .then((range) => {
+        if (cancelled) return;
+        setTickerRange(range);
+        setBacktestForm((prev) => ({
+          ...prev,
+          startDate: clampDate(prev.startDate, range.start_date, range.end_date),
+          endDate: clampDate(prev.endDate, range.start_date, range.end_date),
+        }));
+      })
+      .catch(() => {
+        if (!cancelled) setTickerRange(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [backtestForm.ticker]);
 
   const filtered = useMemo(() => {
     return strategies.filter((s) => String(s.project_id) === String(projectId));
@@ -162,17 +220,34 @@ export default function StrategiesPage() {
                 </label>
                 <label className="field">
                   <span>Ticker</span>
-                  <input
+                  <select
                     value={backtestForm.ticker}
                     onChange={(e) => setBacktestForm({ ...backtestForm, ticker: e.target.value })}
-                    placeholder="AAPL"
-                  />
+                    disabled={tickersLoading || !tickers.length}
+                  >
+                    {!tickers.length && (
+                      <option value="">
+                        {tickersLoading ? 'Loading tickers...' : 'No market data uploaded yet'}
+                      </option>
+                    )}
+                    {tickers.map((t) => (
+                      <option key={t} value={t}>{t}</option>
+                    ))}
+                  </select>
+                  {tickerRange && (
+                    <span className="muted" style={{ fontSize: '0.8em' }}>
+                      Data available {toDateInputValue(tickerRange.start_date)} to {toDateInputValue(tickerRange.end_date)}
+                      {' '}({tickerRange.count} bars)
+                    </span>
+                  )}
                 </label>
                 <label className="field">
                   <span>Start Date</span>
                   <input
                     type="date"
                     value={backtestForm.startDate}
+                    min={tickerRange ? toDateInputValue(tickerRange.start_date) : undefined}
+                    max={tickerRange ? toDateInputValue(tickerRange.end_date) : undefined}
                     onChange={(e) => setBacktestForm({ ...backtestForm, startDate: e.target.value })}
                   />
                 </label>
@@ -181,6 +256,8 @@ export default function StrategiesPage() {
                   <input
                     type="date"
                     value={backtestForm.endDate}
+                    min={tickerRange ? toDateInputValue(tickerRange.start_date) : undefined}
+                    max={tickerRange ? toDateInputValue(tickerRange.end_date) : undefined}
                     onChange={(e) => setBacktestForm({ ...backtestForm, endDate: e.target.value })}
                   />
                 </label>
@@ -193,7 +270,7 @@ export default function StrategiesPage() {
                   />
                 </label>
               </div>
-              <button className="primary-btn" type="submit" disabled={backtestLoading || !selectedStrategyId}>
+              <button className="primary-btn" type="submit" disabled={backtestLoading || !selectedStrategyId || !backtestForm.ticker}>
                 {backtestLoading ? 'Running...' : 'Run Backtest'}
               </button>
             </form>

@@ -9,6 +9,7 @@ export default function TopNav() {
   const navLinks = [
     { to: '/', label: 'Home' },
     { to: '/projects', label: 'Projects', requireAuth: true },
+    { to: '/data', label: 'Data', requireAuth: true },
   ];
 
   return (
