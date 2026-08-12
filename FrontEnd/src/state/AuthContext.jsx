@@ -22,8 +22,13 @@ export function AuthProvider({ children }) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
 
+  // Applied synchronously during render (not in an effect) so the axios client
+  // has the Authorization header attached before any child's mount-time effect
+  // (e.g. a page's initial data fetch) can fire a request without it — child
+  // effects run before parent effects on mount, so a useEffect here is too late.
+  setAuthToken(token || null);
+
   useEffect(() => {
-    setAuthToken(token || null);
     if (token) {
       localStorage.setItem(storageKey, token);
       setProfile(decodeJwt(token));
