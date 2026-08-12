@@ -271,10 +271,6 @@ textarea {
 
 .code-editor {
   width: 100%;
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  font-size: 13px;
-  line-height: 1.5;
-  min-height: 320px;
 }
 
 .mode-toggle {

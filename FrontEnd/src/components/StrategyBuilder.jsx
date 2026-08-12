@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import CodeEditor from './CodeEditor.jsx';
 
 const INDICATORS = [
   { id: 'sma', name: 'Simple Moving Average', params: ['period'] },
@@ -186,13 +187,7 @@ export default function StrategyBuilder({ onSave, onCancel }) {
             <code>np</code> are available; other imports aren't allowed. Code runs in a sandboxed process with a
             resource limit and a timeout, so keep it simple and avoid unbounded loops.
           </p>
-          <textarea
-            className="code-editor"
-            rows={18}
-            spellCheck={false}
-            value={code}
-            onChange={(e) => setCode(e.target.value)}
-          />
+          <CodeEditor value={code} onChange={setCode} />
         </div>
       ) : (
         <>
