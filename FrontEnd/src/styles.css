@@ -259,6 +259,11 @@ input, textarea, select {
   font-family: inherit;
 }
 
+select option {
+  background: #10141f;
+  color: var(--fg);
+}
+
 textarea {
   min-height: 110px;
   resize: vertical;
