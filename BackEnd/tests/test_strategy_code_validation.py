@@ -158,3 +158,28 @@ async def test_update_strategy_code_to_valid_code_succeeds(session_factory, seed
             strategy_id, {"code": new_code}, db=db, user=user,
         )
     assert updated.code == new_code
+
+
+@pytest.mark.asyncio
+async def test_validate_code_endpoint_accepts_valid_code(session_factory, seeded):
+    user = await _get_user(session_factory, seeded["user_id"])
+    payload = strategies_router.CodeValidationRequest(code=VALID_CODE)
+    result = await strategies_router.validate_code(payload, user=user)
+    assert result.valid is True
+    assert result.violations == []
+
+
+@pytest.mark.asyncio
+async def test_validate_code_endpoint_reports_line_numbered_violations(session_factory, seeded):
+    user = await _get_user(session_factory, seeded["user_id"])
+    code = (
+        "def generate_signals(df):\n"
+        "    return df['close'] * 0\n"
+        "import os\n"
+    )
+    payload = strategies_router.CodeValidationRequest(code=code)
+    result = await strategies_router.validate_code(payload, user=user)
+    assert result.valid is False
+    assert result.violations == [
+        strategies_router.CodeViolation(line=3, message="import of 'os' is not allowed"),
+    ]

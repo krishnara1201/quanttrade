@@ -102,3 +102,26 @@ async def update_strategy(strategy_id: int, strategy_data: dict, db: AsyncSessio
         await db.commit()
         await db.refresh(strategy)
         return strategy
+
+
+class CodeValidationRequest(BaseModel):
+    code: str
+
+
+class CodeViolation(BaseModel):
+    line: Optional[int] = None
+    message: str
+
+
+class CodeValidationResponse(BaseModel):
+    valid: bool
+    violations: list[CodeViolation] = []
+
+
+@router.post("/validate-code", response_model=CodeValidationResponse)
+async def validate_code(payload: CodeValidationRequest, user: User = Depends(get_current_user)):
+    try:
+        check_ast_safety(payload.code)
+    except SandboxValidationError as e:
+        return CodeValidationResponse(valid=False, violations=e.violations)
+    return CodeValidationResponse(valid=True, violations=[])
