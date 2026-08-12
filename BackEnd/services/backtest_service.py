@@ -28,13 +28,24 @@ async def run_backtest(strategy_id: int, ticker: str, start_date: str, end_date:
     # Verify ownership
     if strategy.project.owner_id != user.id:
         raise HTTPException(status_code=403, detail="Unauthorized")
-    
+
+    # start_date/end_date arrive as plain strings (e.g. "2023-01-01") from the
+    # request body. SQLite tolerates comparing a DateTime column to a raw str,
+    # but Postgres/asyncpg does not ("operator does not exist: timestamp
+    # without time zone >= character varying") — parse to datetime up front
+    # so the comparison is well-typed on every backend.
+    try:
+        start_dt = datetime.fromisoformat(start_date)
+        end_dt = datetime.fromisoformat(end_date)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="start_date and end_date must be ISO-formatted dates (YYYY-MM-DD)")
+
     # Fetch market data
     data_result = await db.execute(
         select(MarketData).where(
             MarketData.ticker == ticker,
-            MarketData.date >= start_date,
-            MarketData.date <= end_date
+            MarketData.date >= start_dt,
+            MarketData.date <= end_dt
         ).order_by(MarketData.date)
     )
     market_data_rows = data_result.scalars().all()
@@ -69,8 +80,8 @@ async def run_backtest(strategy_id: int, ticker: str, start_date: str, end_date:
     # Save results
     result_record = BacktestResult(
         strategy_id=strategy_id,
-        start_date=datetime.fromisoformat(start_date),
-        end_date=datetime.fromisoformat(end_date),
+        start_date=start_dt,
+        end_date=end_dt,
         results=backtest_results['metrics'],
         trades=backtest_results['trades'],
         signals=backtest_results['signals'],

@@ -112,6 +112,43 @@ async def test_run_backtest_does_not_raise_missing_greenlet(session_factory, see
 
 
 @pytest.mark.asyncio
+async def test_run_backtest_queries_market_data_with_datetime_not_raw_string(session_factory, seeded, monkeypatch):
+    """Regression for a prod-only bug: start_date/end_date arrive as plain
+    strings ("2024-01-01"). SQLite's DateTime bind processor passes a raw str
+    straight through unmodified, so `MarketData.date >= "2024-01-01"` quietly
+    "works" here — but Postgres/asyncpg binds it as ::VARCHAR and rejects
+    `timestamp >= varchar` outright (UndefinedFunctionError), 500ing every
+    real backtest run. This only catches the type of value SQLAlchemy binds
+    into the query (independent of dialect), which is where the bug actually
+    lives, since a SQLite-only test can't reproduce the Postgres error itself."""
+    captured_params = []
+
+    async with session_factory() as db:
+        user = await _reload_user(session_factory, seeded["user_id"])
+        original_execute = db.execute
+
+        async def spying_execute(stmt, *args, **kwargs):
+            if hasattr(stmt, "compile"):
+                compiled = stmt.compile(compile_kwargs={"literal_binds": False})
+                captured_params.append(dict(compiled.params))
+            return await original_execute(stmt, *args, **kwargs)
+
+        monkeypatch.setattr(db, "execute", spying_execute)
+
+        await backtest_service.run_backtest(
+            seeded["strategy_id"], "TEST", "2024-01-01", "2024-01-06",
+            db=db, user=user,
+        )
+
+    all_values = [v for params in captured_params for v in params.values()]
+    assert "2024-01-01" not in all_values, "start_date leaked into the query as a raw string"
+    assert "2024-01-06" not in all_values, "end_date leaked into the query as a raw string"
+    assert any(
+        isinstance(v, datetime) and v == datetime(2024, 1, 1) for v in all_values
+    ), "expected start_date to be bound as a parsed datetime"
+
+
+@pytest.mark.asyncio
 async def test_get_backtest_results_does_not_raise_missing_greenlet(session_factory, seeded):
     async with session_factory() as db:
         user = await _reload_user(session_factory, seeded["user_id"])
