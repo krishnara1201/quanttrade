@@ -4,6 +4,10 @@ import {
   Tooltip, Legend, ResponsiveContainer, ComposedChart
 } from 'recharts';
 
+function formatDateTick(value) {
+  return typeof value === 'string' ? value.split('T')[0] : value;
+}
+
 export default function BacktestChart({ data, trades, equityCurve }) {
   if (!data || data.length === 0) {
     return <p className="muted">No data to display</p>;
@@ -39,16 +43,17 @@ export default function BacktestChart({ data, trades, equityCurve }) {
           <CartesianGrid strokeDasharray="3 3" />
           <XAxis
             dataKey="date"
+            tickFormatter={formatDateTick}
             tick={{ fontSize: 12 }}
             interval={Math.floor(chartData.length / 10)}
-            angle={-45}
-            textAnchor="end"
-            height={50}
           />
           <YAxis yAxisId="left" />
           <YAxis yAxisId="right" orientation="right" />
           <Tooltip
             formatter={(value) => (typeof value === 'number' ? value.toFixed(2) : value)}
+            labelFormatter={formatDateTick}
+            contentStyle={{ backgroundColor: '#10141f', border: '1px solid rgba(255, 255, 255, 0.08)' }}
+            labelStyle={{ color: '#f5f7fb' }}
           />
           <Legend />
 
@@ -88,14 +93,17 @@ export default function BacktestChart({ data, trades, equityCurve }) {
             <CartesianGrid strokeDasharray="3 3" />
             <XAxis
               dataKey="date"
+              tickFormatter={formatDateTick}
               tick={{ fontSize: 12 }}
               interval={Math.floor(equityData.length / 10)}
-              angle={-45}
-              textAnchor="end"
-              height={50}
             />
             <YAxis />
-            <Tooltip formatter={(value) => (typeof value === 'number' ? value.toFixed(2) : value)} />
+            <Tooltip
+              formatter={(value) => (typeof value === 'number' ? value.toFixed(2) : value)}
+              labelFormatter={formatDateTick}
+              contentStyle={{ backgroundColor: '#10141f', border: '1px solid rgba(255, 255, 255, 0.08)' }}
+              labelStyle={{ color: '#f5f7fb' }}
+            />
             <Legend />
             <Line
               type="monotone"
