@@ -35,12 +35,15 @@ export default function BacktestChart({ data, trades, equityCurve }) {
   return (
     <div className="chart-container">
       <ResponsiveContainer width="100%" height={400}>
-        <ComposedChart data={chartData} margin={{ top: 5, right: 30, left: 0, bottom: 5 }}>
+        <ComposedChart data={chartData} margin={{ top: 5, right: 30, left: 0, bottom: 25 }}>
           <CartesianGrid strokeDasharray="3 3" />
           <XAxis
             dataKey="date"
             tick={{ fontSize: 12 }}
             interval={Math.floor(chartData.length / 10)}
+            angle={-45}
+            textAnchor="end"
+            height={50}
           />
           <YAxis yAxisId="left" />
           <YAxis yAxisId="right" orientation="right" />
@@ -80,13 +83,16 @@ export default function BacktestChart({ data, trades, equityCurve }) {
       </ResponsiveContainer>
 
       {equityData.length > 0 && (
-        <ResponsiveContainer width="100%" height={200}>
-          <LineChart data={equityData} margin={{ top: 5, right: 30, left: 0, bottom: 5 }}>
+        <ResponsiveContainer width="100%" height={230}>
+          <LineChart data={equityData} margin={{ top: 5, right: 30, left: 0, bottom: 25 }}>
             <CartesianGrid strokeDasharray="3 3" />
             <XAxis
               dataKey="date"
               tick={{ fontSize: 12 }}
               interval={Math.floor(equityData.length / 10)}
+              angle={-45}
+              textAnchor="end"
+              height={50}
             />
             <YAxis />
             <Tooltip formatter={(value) => (typeof value === 'number' ? value.toFixed(2) : value)} />
