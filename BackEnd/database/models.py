@@ -65,12 +65,18 @@ class BacktestResult(Base):
     id = Column(Integer, primary_key=True)
     strategy_id = Column(Integer, ForeignKey("strategies.id"), nullable=False)
     strategy = relationship("Strategy", back_populates="backtests")
+    ticker = Column(String, nullable=True)
     start_date = Column(DateTime, nullable=False)
     end_date = Column(DateTime, nullable=False)
+    initial_capital = Column(Float, nullable=True)
+    commission_pct = Column(Float, nullable=True)
+    slippage_pct = Column(Float, nullable=True)
     results = Column(JSON, default={})  # Summary stats, performance metrics stored as JSON
     trades = Column(JSON, default=[])  # List of trades executed, each with details (entry/exit, price, size)
     signals = Column(JSON, default=[])  # Per-bar {date, close, signal} series for charting
     equity_curve = Column(JSON, default=[])  # Per-bar {date, equity} mark-to-market series
+    status = Column(String, default="pending")  # pending -> running -> success | failed
+    error_message = Column(Text, nullable=True)
     logs = Column(Text, default='')  # Optional logs or error messages
     created_at = Column(DateTime, default=datetime.utcnow)
 
@@ -89,4 +95,25 @@ class PortfolioBacktestResult(Base):
     results = Column(JSON, default={})       # aggregate portfolio metrics
     equity_curve = Column(JSON, default=[])  # aggregate portfolio {date, equity} series
     per_ticker = Column(JSON, default={})    # {ticker: {allocated_capital, metrics, trades, signals, equity_curve}}
+    status = Column(String, default="pending")  # pending -> running -> success | failed
+    error_message = Column(Text, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class DataImportJob(Base):
+    """Tracks an async CSV/Stooq upload or Alpha Vantage import — the
+    market-data equivalent of BacktestResult's status/error_message, except
+    there's no existing entity to attach status to for imports, hence a
+    dedicated table. MarketData itself stays unowned (see routers/data.py);
+    user_id here just tracks who submitted the job, so their own DataPage
+    knows what to poll."""
+    __tablename__ = "data_import_jobs"
+    id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    source = Column(String, nullable=False)  # "csv" | "alpha_vantage"
+    ticker = Column(String, nullable=True)  # null for a multi-symbol Stooq .txt upload
+    status = Column(String, default="pending")  # pending -> running -> success | failed
+    result = Column(JSON, nullable=True)  # {ticker, inserted, skipped} or a list thereof
+    error_message = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
