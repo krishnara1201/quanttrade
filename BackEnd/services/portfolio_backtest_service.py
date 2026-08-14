@@ -9,7 +9,7 @@ rebalancing and no cross-ticker strategy logic (see the design spec at
 docs/superpowers/specs/2026-08-13-portfolio-backtests-design.md).
 """
 from datetime import datetime
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 import pandas as pd
 from sqlalchemy import func, select
@@ -134,6 +134,10 @@ async def create_pending_portfolio_backtest(
     slippage_pct: float,
     db: AsyncSession,
     user: User,
+    *,
+    allow_short: bool = False,
+    stop_loss_pct: Optional[float] = None,
+    take_profit_pct: Optional[float] = None,
 ) -> PortfolioBacktestResult:
     """Validate ownership/input/ticker-coverage and insert a pending
     PortfolioBacktestResult row. The actual per-ticker execution happens
@@ -155,6 +159,11 @@ async def create_pending_portfolio_backtest(
     except ValueError:
         raise ValueError("start_date and end_date must be ISO-formatted dates (YYYY-MM-DD)")
 
+    if stop_loss_pct is not None and stop_loss_pct <= 0:
+        raise ValueError("stop_loss_pct must be positive")
+    if take_profit_pct is not None and take_profit_pct <= 0:
+        raise ValueError("take_profit_pct must be positive")
+
     allocations = normalize_weights(tickers)
 
     for alloc in allocations:
@@ -167,6 +176,9 @@ async def create_pending_portfolio_backtest(
         initial_capital=initial_capital,
         commission_pct=commission_pct,
         slippage_pct=slippage_pct,
+        allow_short=allow_short,
+        stop_loss_pct=stop_loss_pct,
+        take_profit_pct=take_profit_pct,
         allocations=allocations,
         status="pending",
     )
@@ -229,6 +241,8 @@ async def execute_portfolio_backtest(portfolio_backtest_id: int, db: AsyncSessio
                 ticker_result = executor.backtest(
                     df, initial_capital=sub_capital,
                     commission_pct=record.commission_pct, slippage_pct=record.slippage_pct,
+                    allow_short=record.allow_short, stop_loss_pct=record.stop_loss_pct,
+                    take_profit_pct=record.take_profit_pct,
                 )
             except Exception as e:
                 raise ValueError(f"Backtest execution failed for {ticker}: {str(e)}")

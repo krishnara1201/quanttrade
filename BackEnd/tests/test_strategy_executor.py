@@ -19,6 +19,51 @@ def make_executor(parameters=None, entry="close > 0", exit="close < 0"):
     return StrategyExecutor(config)
 
 
+def test_open_and_close_position_helpers_match_original_long_math():
+    executor = make_executor()
+    trades = []
+
+    direction, qty, entry_price, entry_basis, cash = executor._open_position(
+        'long', close_price=100.0, cash=1000.0, commission_pct=1.0, slippage_pct=0.5,
+        timestamp='2024-01-01T00:00:00', trades=trades,
+    )
+    assert direction == 'long'
+    assert qty == 9
+    assert entry_price == pytest.approx(100.5, abs=1e-6)
+    assert entry_basis == pytest.approx(913.545, abs=1e-3)
+    assert cash == pytest.approx(86.455, abs=1e-3)
+    assert trades == [{
+        'type': 'entry', 'direction': 'long',
+        'price': pytest.approx(100.5, abs=1e-6), 'date': '2024-01-01T00:00:00', 'size': 9,
+    }]
+
+    direction, qty, entry_price, entry_basis, cash = executor._close_position(
+        direction, qty, entry_basis, close_price=110.0, cash=cash,
+        commission_pct=1.0, slippage_pct=0.5, timestamp='2024-01-02T00:00:00',
+        exit_reason='signal', trades=trades,
+    )
+    assert direction is None
+    assert qty == 0
+    assert cash == pytest.approx(1061.6545, abs=1e-3)
+    assert trades[1]['type'] == 'exit'
+    assert trades[1]['direction'] == 'long'
+    assert trades[1]['exit_reason'] == 'signal'
+    assert trades[1]['pnl'] == pytest.approx(61.6545, abs=1e-3)
+
+
+def test_open_position_returns_flat_when_cash_cannot_afford_one_share():
+    executor = make_executor()
+    trades = []
+    direction, qty, entry_price, entry_basis, cash = executor._open_position(
+        'long', close_price=1000.0, cash=500.0, commission_pct=1.0, slippage_pct=0.5,
+        timestamp='2024-01-01T00:00:00', trades=trades,
+    )
+    assert direction is None
+    assert qty == 0
+    assert cash == pytest.approx(500.0)
+    assert trades == []
+
+
 def test_sma_matches_pandas_rolling_mean():
     closes = [10, 11, 12, 13, 14, 15, 16, 17]
     df = make_price_df(closes)
@@ -239,3 +284,205 @@ def test_metrics_use_equity_curve_final_value_when_position_still_open():
     assert expected_final_capital != pytest.approx(1000.0)
     assert metrics["final_capital"] == pytest.approx(expected_final_capital, rel=1e-9)
     assert metrics["total_return"] == pytest.approx(expected_final_capital - 1000.0, rel=1e-9)
+
+
+def test_execute_trades_allow_short_false_ignores_negative_signal_when_flat():
+    closes = [100, 100, 90]
+    df = make_price_df(closes)
+    df["signal"] = [0, -1, 0]
+    executor = make_executor()
+
+    trades, equity_curve = executor._execute_trades(
+        df, initial_capital=1000.0, commission_pct=1.0, slippage_pct=0.5,
+    )
+
+    assert trades == []
+    assert all(pt['equity'] == pytest.approx(1000.0) for pt in equity_curve)
+
+
+def test_execute_trades_allow_short_opens_short_and_can_reflip_to_long_same_bar():
+    closes = [100, 100, 90]
+    df = make_price_df(closes)
+    df["signal"] = [0, -1, 1]
+    executor = make_executor()
+
+    trades, equity_curve = executor._execute_trades(
+        df, initial_capital=1000.0, commission_pct=1.0, slippage_pct=0.5, allow_short=True,
+    )
+
+    assert len(trades) == 3
+    short_entry, short_exit, long_entry = trades
+
+    assert short_entry == {
+        'type': 'entry', 'direction': 'short',
+        'price': pytest.approx(99.5, abs=1e-6), 'date': df.index[1].isoformat(), 'size': 9,
+    }
+    assert short_exit['type'] == 'exit'
+    assert short_exit['direction'] == 'short'
+    assert short_exit['exit_reason'] == 'signal'
+    assert short_exit['price'] == pytest.approx(90.45, abs=1e-6)
+    assert short_exit['pnl'] == pytest.approx(64.3545, abs=1e-3)
+    assert long_entry == {
+        'type': 'entry', 'direction': 'long',
+        'price': pytest.approx(90.45, abs=1e-6), 'date': df.index[2].isoformat(), 'size': 11,
+    }
+
+    assert equity_curve[0]['equity'] == pytest.approx(1000.0, abs=1e-6)
+    assert equity_curve[1]['equity'] == pytest.approx(986.545, abs=1e-3)
+    assert equity_curve[2]['equity'] == pytest.approx(1049.455, abs=1e-3)
+
+
+def test_execute_trades_take_profit_closes_short_position():
+    closes = [100, 100, 90]
+    df = make_price_df(closes)
+    df["signal"] = [0, -1, 0]
+    executor = make_executor()
+
+    trades, equity_curve = executor._execute_trades(
+        df, initial_capital=1000.0, commission_pct=1.0, slippage_pct=0.5,
+        allow_short=True, take_profit_pct=5.0,
+    )
+
+    assert len(trades) == 2
+    entry, exit_ = trades
+    assert entry['direction'] == 'short'
+    assert exit_['direction'] == 'short'
+    assert exit_['exit_reason'] == 'take_profit'
+    assert exit_['price'] == pytest.approx(90.45, abs=1e-6)
+    assert exit_['pnl'] == pytest.approx(64.3545, abs=1e-3)
+    assert equity_curve[-1]['equity'] == pytest.approx(1064.3545, abs=1e-3)
+
+
+def test_execute_trades_stop_loss_forces_exit_then_signal_can_reenter_same_bar():
+    closes = [100, 100, 96]
+    df = make_price_df(closes)
+    df["signal"] = [0, 1, 1]
+    executor = make_executor()
+
+    trades, equity_curve = executor._execute_trades(
+        df, initial_capital=1000.0, commission_pct=0.0, slippage_pct=0.0,
+        stop_loss_pct=3.0,
+    )
+
+    assert len(trades) == 3
+    first_entry, stop_exit, reentry = trades
+    assert first_entry == {
+        'type': 'entry', 'direction': 'long',
+        'price': 100.0, 'date': df.index[1].isoformat(), 'size': 10,
+    }
+    assert stop_exit['type'] == 'exit'
+    assert stop_exit['exit_reason'] == 'stop_loss'
+    assert stop_exit['price'] == pytest.approx(96.0, abs=1e-6)
+    assert stop_exit['pnl'] == pytest.approx(-40.0, abs=1e-6)
+    assert reentry == {
+        'type': 'entry', 'direction': 'long',
+        'price': 96.0, 'date': df.index[2].isoformat(), 'size': 10,
+    }
+    assert equity_curve[-1]['equity'] == pytest.approx(960.0, abs=1e-6)
+
+
+def test_execute_trades_allow_short_closes_long_and_can_reflip_to_short_same_bar():
+    # Mirror of test_execute_trades_allow_short_opens_short_and_can_reflip_to_long_same_bar,
+    # in the opposite direction: a long position open, then signal=-1 with
+    # allow_short=True should close the long (direction becomes None) and,
+    # since the account is now flat, immediately open a new short the same bar.
+    # 0% commission/slippage keeps the arithmetic hand-verifiable:
+    #   bar1 (signal=1, flat->long): fill_price = 100 * (1+0) = 100
+    #     effective_price = 100 * (1+0) = 100; qty = floor(1000/100) = 10
+    #     entry_basis = 10*100 + 0 = 1000; cash = 1000 - 1000 = 0
+    #     equity = cash + qty*close = 0 + 10*100 = 1000
+    #   bar2 (signal=-1, long->flat): fill_price = 90 * (1-0) = 90
+    #     proceeds = 10*90 = 900; commission = 0; net_proceeds = 900
+    #     pnl = 900 - 1000 = -100; cash = 0 + 900 = 900
+    #   bar2 continued (flat->short, allow_short=True): fill_price = 90 * (1-0) = 90
+    #     effective_price = 90 * (1+0) = 90; qty = floor(900/90) = 10
+    #     entry_basis = 10*90 - 0 = 900; cash = 900 + 900 = 1800
+    #     equity = cash - qty*close = 1800 - 10*90 = 900
+    closes = [100, 100, 90]
+    df = make_price_df(closes)
+    df["signal"] = [0, 1, -1]
+    executor = make_executor()
+
+    trades, equity_curve = executor._execute_trades(
+        df, initial_capital=1000.0, commission_pct=0.0, slippage_pct=0.0, allow_short=True,
+    )
+
+    assert len(trades) == 3
+    long_entry, long_exit, short_entry = trades
+
+    assert long_entry == {
+        'type': 'entry', 'direction': 'long',
+        'price': 100.0, 'date': df.index[1].isoformat(), 'size': 10,
+    }
+    assert long_exit['type'] == 'exit'
+    assert long_exit['direction'] == 'long'
+    assert long_exit['exit_reason'] == 'signal'
+    assert long_exit['price'] == pytest.approx(90.0, abs=1e-6)
+    assert long_exit['pnl'] == pytest.approx(-100.0, abs=1e-6)
+    assert short_entry == {
+        'type': 'entry', 'direction': 'short',
+        'price': pytest.approx(90.0, abs=1e-6), 'date': df.index[2].isoformat(), 'size': 10,
+    }
+
+    assert equity_curve[0]['equity'] == pytest.approx(1000.0, abs=1e-6)
+    assert equity_curve[1]['equity'] == pytest.approx(1000.0, abs=1e-6)
+    assert equity_curve[2]['equity'] == pytest.approx(900.0, abs=1e-6)
+
+
+def test_execute_trades_stop_loss_closes_short_position():
+    # Mirror of test_execute_trades_take_profit_closes_short_position, but for
+    # a stop-loss trigger on a short (price moves UP against the short instead
+    # of down). Same closes/commission/slippage as the entry half of
+    # test_execute_trades_allow_short_opens_short_and_can_reflip_to_long_same_bar
+    # for the entry leg, so the entry numbers below are re-derived the same way:
+    #   bar1 (signal=-1, flat->short): fill_price = 100 * (1-0.005) = 99.5
+    #     effective_price = 99.5 * (1+0.01) = 100.495; qty = floor(1000/100.495) = 9
+    #     commission = 9*99.5*0.01 = 8.955; entry_basis = 9*99.5 - 8.955 = 886.545
+    #     cash = 1000 + 886.545 = 1886.545
+    #   bar2: stop_loss_pct=5.0 threshold for short = entry_price*(1+0.05)
+    #     = 99.5*1.05 = 104.475; close=110 >= 104.475 -> stop_loss triggers
+    #     fill_price = 110 * (1+0.005) = 110.55
+    #     cost = 9*110.55 = 994.95; commission = 994.95*0.01 = 9.9495
+    #     total_cost = 994.95 + 9.9495 = 1004.8995
+    #     pnl = entry_basis - total_cost = 886.545 - 1004.8995 = -118.3545
+    #     cash = 1886.545 - 1004.8995 = 881.6455
+    closes = [100, 100, 110]
+    df = make_price_df(closes)
+    df["signal"] = [0, -1, 0]
+    executor = make_executor()
+
+    trades, equity_curve = executor._execute_trades(
+        df, initial_capital=1000.0, commission_pct=1.0, slippage_pct=0.5,
+        allow_short=True, stop_loss_pct=5.0,
+    )
+
+    assert len(trades) == 2
+    entry, exit_ = trades
+    assert entry['direction'] == 'short'
+    assert entry['price'] == pytest.approx(99.5, abs=1e-6)
+    assert entry['size'] == 9
+    assert exit_['direction'] == 'short'
+    assert exit_['exit_reason'] == 'stop_loss'
+    assert exit_['price'] == pytest.approx(110.55, abs=1e-6)
+    assert exit_['pnl'] == pytest.approx(-118.3545, abs=1e-3)
+    assert equity_curve[-1]['equity'] == pytest.approx(881.6455, abs=1e-3)
+
+
+def test_backtest_passes_allow_short_and_stop_loss_take_profit_through_to_execute_trades():
+    closes = [100, 101, 99, 102, 105, 103, 108]
+    df = make_price_df(closes)
+    config = {
+        "name": "always-short",
+        "parameters": {},
+        "rules": {"entry": "close > 100000", "exit": "close < 100000"},
+    }
+    executor = StrategyExecutor(config)
+
+    result = executor.backtest(
+        df, initial_capital=1000.0, commission_pct=0.1, slippage_pct=0.05,
+        allow_short=True, stop_loss_pct=50.0, take_profit_pct=50.0,
+    )
+
+    assert any(
+        t['type'] == 'entry' and t['direction'] == 'short' for t in result['trades']
+    )

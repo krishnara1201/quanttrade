@@ -56,7 +56,9 @@ class StrategyExecutor:
         return True
     
     def backtest(self, df: pd.DataFrame, initial_capital: float = 10000.0,
-                 commission_pct: float = 0.1, slippage_pct: float = 0.05) -> Dict[str, Any]:
+                 commission_pct: float = 0.1, slippage_pct: float = 0.05,
+                 allow_short: bool = False, stop_loss_pct: float = None,
+                 take_profit_pct: float = None) -> Dict[str, Any]:
         """
         Run backtest on market data
 
@@ -94,7 +96,10 @@ class StrategyExecutor:
                 elif self._evaluate_condition(rules['exit'], df, i):
                     df.iloc[i, df.columns.get_loc('signal')] = -1
 
-        trades, equity_curve = self._execute_trades(df, initial_capital, commission_pct, slippage_pct)
+        trades, equity_curve = self._execute_trades(
+            df, initial_capital, commission_pct, slippage_pct,
+            allow_short=allow_short, stop_loss_pct=stop_loss_pct, take_profit_pct=take_profit_pct,
+        )
         metrics = self._calculate_metrics(df, trades, initial_capital, equity_curve)
 
         signals = [
@@ -213,55 +218,143 @@ class StrategyExecutor:
     def _format_date(self, idx) -> str:
         return idx.isoformat() if hasattr(idx, 'isoformat') else str(idx)
 
+    def _open_position(self, direction: str, close_price: float, cash: float,
+                        commission_pct: float, slippage_pct: float, timestamp: str,
+                        trades: List[Dict]):
+        """Open a long or short position, sized by full available cash (all-in,
+        max whole shares affordable at the commission-inclusive fill price — the
+        same formula for both directions, no margin modeling). Returns
+        (direction, qty, entry_price, entry_basis, cash); direction/qty stay
+        (None, 0) if cash can't afford even one share."""
+        if direction == 'long':
+            fill_price = close_price * (1 + slippage_pct / 100)
+        else:
+            fill_price = close_price * (1 - slippage_pct / 100)
+        effective_price = fill_price * (1 + commission_pct / 100)
+        qty = int(cash // effective_price)
+        if qty <= 0:
+            return None, 0, 0.0, 0.0, cash
+
+        commission = qty * fill_price * (commission_pct / 100)
+        if direction == 'long':
+            entry_basis = qty * fill_price + commission
+            cash -= entry_basis
+        else:
+            entry_basis = qty * fill_price - commission
+            cash += entry_basis
+
+        trades.append({
+            'type': 'entry',
+            'direction': direction,
+            'price': float(fill_price),
+            'date': timestamp,
+            'size': qty,
+        })
+        return direction, qty, fill_price, entry_basis, cash
+
+    def _close_position(self, direction: str, qty: int, entry_basis: float,
+                         close_price: float, cash: float, commission_pct: float,
+                         slippage_pct: float, timestamp: str, exit_reason: str,
+                         trades: List[Dict]):
+        """Close an open long or short position at the bar's close (adjusted for
+        slippage against the trader), recording pnl and exit_reason on the trade.
+        Returns (None, 0, 0.0, 0.0, cash) — direction/qty/entry_price/entry_basis
+        all reset since the position is now flat."""
+        if direction == 'long':
+            fill_price = close_price * (1 - slippage_pct / 100)
+            proceeds = qty * fill_price
+            commission = proceeds * (commission_pct / 100)
+            net_proceeds = proceeds - commission
+            pnl = net_proceeds - entry_basis
+            cash += net_proceeds
+        else:
+            fill_price = close_price * (1 + slippage_pct / 100)
+            cost = qty * fill_price
+            commission = cost * (commission_pct / 100)
+            total_cost = cost + commission
+            pnl = entry_basis - total_cost
+            cash -= total_cost
+
+        trades.append({
+            'type': 'exit',
+            'direction': direction,
+            'price': float(fill_price),
+            'date': timestamp,
+            'size': qty,
+            'pnl': float(pnl),
+            'exit_reason': exit_reason,
+        })
+        return None, 0, 0.0, 0.0, cash
+
     def _execute_trades(self, df: pd.DataFrame, initial_capital: float,
-                         commission_pct: float = 0.1, slippage_pct: float = 0.05):
-        """Execute trades based on signals using capital-based sizing with commission/slippage"""
+                         commission_pct: float = 0.1, slippage_pct: float = 0.05,
+                         allow_short: bool = False,
+                         stop_loss_pct: float = None, take_profit_pct: float = None):
+        """Execute trades based on signals using capital-based sizing with
+        commission/slippage. allow_short=True reinterprets signal=-1 as a short
+        entry when flat (still an exit when long); signal=1 while short covers
+        it and can then open a new long the same bar. stop_loss_pct/take_profit_pct,
+        if set, force a close-only exit each bar (checked against that bar's
+        close, before the bar's own signal is evaluated) independent of signal —
+        so a forced exit can still be followed by a same-bar re-entry."""
         trades = []
         equity_curve = []
         cash = initial_capital
-        shares = 0
-        entry_cost_basis = 0.0
+        direction = None
+        qty = 0
+        entry_price = 0.0
+        entry_basis = 0.0
 
         for i in range(len(df)):
             signal = df['signal'].iloc[i] if 'signal' in df.columns else 0
             close_price = df['close'].iloc[i]
             timestamp = self._format_date(df.index[i])
 
-            if signal == 1 and shares == 0:
-                fill_price = close_price * (1 + slippage_pct / 100)
-                effective_price = fill_price * (1 + commission_pct / 100)
-                candidate_shares = int(cash // effective_price)
-                if candidate_shares > 0:
-                    commission = candidate_shares * fill_price * (commission_pct / 100)
-                    cost = candidate_shares * fill_price + commission
-                    shares = candidate_shares
-                    cash -= cost
-                    entry_cost_basis = cost
-                    trades.append({
-                        'type': 'entry',
-                        'price': float(fill_price),
-                        'date': timestamp,
-                        'size': shares,
-                    })
+            if direction is not None:
+                exit_reason = None
+                if direction == 'long':
+                    if stop_loss_pct and close_price <= entry_price * (1 - stop_loss_pct / 100):
+                        exit_reason = 'stop_loss'
+                    elif take_profit_pct and close_price >= entry_price * (1 + take_profit_pct / 100):
+                        exit_reason = 'take_profit'
+                else:
+                    if stop_loss_pct and close_price >= entry_price * (1 + stop_loss_pct / 100):
+                        exit_reason = 'stop_loss'
+                    elif take_profit_pct and close_price <= entry_price * (1 - take_profit_pct / 100):
+                        exit_reason = 'take_profit'
+                if exit_reason:
+                    direction, qty, entry_price, entry_basis, cash = self._close_position(
+                        direction, qty, entry_basis, close_price, cash,
+                        commission_pct, slippage_pct, timestamp, exit_reason, trades,
+                    )
 
-            elif signal == -1 and shares > 0:
-                fill_price = close_price * (1 - slippage_pct / 100)
-                proceeds = shares * fill_price
-                commission = proceeds * (commission_pct / 100)
-                net_proceeds = proceeds - commission
-                pnl = net_proceeds - entry_cost_basis
-                cash += net_proceeds
-                trades.append({
-                    'type': 'exit',
-                    'price': float(fill_price),
-                    'date': timestamp,
-                    'size': shares,
-                    'pnl': float(pnl),
-                })
-                shares = 0
-                entry_cost_basis = 0.0
+            if signal == 1:
+                if direction == 'short':
+                    direction, qty, entry_price, entry_basis, cash = self._close_position(
+                        direction, qty, entry_basis, close_price, cash,
+                        commission_pct, slippage_pct, timestamp, 'signal', trades,
+                    )
+                if direction is None:
+                    direction, qty, entry_price, entry_basis, cash = self._open_position(
+                        'long', close_price, cash, commission_pct, slippage_pct, timestamp, trades,
+                    )
+            elif signal == -1:
+                if direction == 'long':
+                    direction, qty, entry_price, entry_basis, cash = self._close_position(
+                        direction, qty, entry_basis, close_price, cash,
+                        commission_pct, slippage_pct, timestamp, 'signal', trades,
+                    )
+                if direction is None and allow_short:
+                    direction, qty, entry_price, entry_basis, cash = self._open_position(
+                        'short', close_price, cash, commission_pct, slippage_pct, timestamp, trades,
+                    )
 
-            equity = cash + (shares * close_price if shares > 0 else 0)
+            if direction == 'long':
+                equity = cash + qty * close_price
+            elif direction == 'short':
+                equity = cash - qty * close_price
+            else:
+                equity = cash
             equity_curve.append({'date': timestamp, 'equity': float(equity)})
 
         return trades, equity_curve

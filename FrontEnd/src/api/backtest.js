@@ -1,6 +1,6 @@
 import client from './client.js';
 
-export async function runBacktest(strategyId, ticker, startDate, endDate, initialCapital = 10000, commissionPct = 0.1, slippagePct = 0.05) {
+export async function runBacktest(strategyId, ticker, startDate, endDate, initialCapital = 10000, commissionPct = 0.1, slippagePct = 0.05, allowShort = false, stopLossPct = null, takeProfitPct = null) {
   const { data } = await client.post('/api/backtest/run', {
     strategy_id: strategyId,
     ticker,
@@ -9,6 +9,9 @@ export async function runBacktest(strategyId, ticker, startDate, endDate, initia
     initial_capital: initialCapital,
     commission_pct: commissionPct,
     slippage_pct: slippagePct,
+    allow_short: allowShort,
+    stop_loss_pct: stopLossPct,
+    take_profit_pct: takeProfitPct,
   });
   return data;
 }
@@ -23,7 +26,7 @@ export async function getBacktestDetail(backtestId) {
   return data;
 }
 
-export async function runPortfolioBacktest(strategyId, tickers, startDate, endDate, initialCapital = 10000, commissionPct = 0.1, slippagePct = 0.05) {
+export async function runPortfolioBacktest(strategyId, tickers, startDate, endDate, initialCapital = 10000, commissionPct = 0.1, slippagePct = 0.05, allowShort = false, stopLossPct = null, takeProfitPct = null) {
   const { data } = await client.post('/api/backtest/run-portfolio', {
     strategy_id: strategyId,
     tickers,
@@ -32,6 +35,9 @@ export async function runPortfolioBacktest(strategyId, tickers, startDate, endDa
     initial_capital: initialCapital,
     commission_pct: commissionPct,
     slippage_pct: slippagePct,
+    allow_short: allowShort,
+    stop_loss_pct: stopLossPct,
+    take_profit_pct: takeProfitPct,
   });
   return data;
 }

@@ -94,3 +94,65 @@ async def test_data_import_job_round_trips(session_factory):
     assert job.result is None
     assert job.error_message is None
     assert job.created_at is not None
+
+
+@pytest.mark.asyncio
+async def test_backtest_result_has_shorting_and_stop_loss_take_profit_columns(session_factory):
+    async with session_factory() as db:
+        user = User(name="Ada", email="ada@example.com", password_hash="x")
+        db.add(user)
+        await db.flush()
+        project = Project(name="p", owner_id=user.id)
+        db.add(project)
+        await db.flush()
+        strategy = Strategy(name="s", project_id=project.id, parameters="{}")
+        db.add(strategy)
+        await db.flush()
+
+        record = BacktestResult(
+            strategy_id=strategy.id,
+            ticker="AAPL",
+            start_date=datetime(2024, 1, 1),
+            end_date=datetime(2024, 1, 5),
+            initial_capital=10000.0,
+            commission_pct=0.1,
+            slippage_pct=0.05,
+        )
+        db.add(record)
+        await db.commit()
+        await db.refresh(record)
+
+    assert record.allow_short is False
+    assert record.stop_loss_pct is None
+    assert record.take_profit_pct is None
+
+
+@pytest.mark.asyncio
+async def test_portfolio_backtest_result_has_shorting_and_stop_loss_take_profit_columns(session_factory):
+    async with session_factory() as db:
+        user = User(name="Ada", email="ada@example.com", password_hash="x")
+        db.add(user)
+        await db.flush()
+        project = Project(name="p", owner_id=user.id)
+        db.add(project)
+        await db.flush()
+        strategy = Strategy(name="s", project_id=project.id, parameters="{}")
+        db.add(strategy)
+        await db.flush()
+
+        record = PortfolioBacktestResult(
+            strategy_id=strategy.id,
+            start_date=datetime(2024, 1, 1),
+            end_date=datetime(2024, 1, 5),
+            initial_capital=10000.0,
+            commission_pct=0.1,
+            slippage_pct=0.05,
+            allocations=[{"ticker": "AAPL", "weight": 1.0}],
+        )
+        db.add(record)
+        await db.commit()
+        await db.refresh(record)
+
+    assert record.allow_short is False
+    assert record.stop_loss_pct is None
+    assert record.take_profit_pct is None

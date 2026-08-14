@@ -1,3 +1,4 @@
+from typing import Optional
 from fastapi import Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
@@ -14,7 +15,11 @@ async def create_pending_backtest(strategy_id: int, ticker: str, start_date: str
                        commission_pct: float = 0.1,
                        slippage_pct: float = 0.05,
                        db: AsyncSession = Depends(get_db),
-                       user: User = Depends(get_current_user)) -> BacktestResult:
+                       user: User = Depends(get_current_user),
+                       *,
+                       allow_short: bool = False,
+                       stop_loss_pct: Optional[float] = None,
+                       take_profit_pct: Optional[float] = None) -> BacktestResult:
     """Validate ownership/input and insert a pending BacktestResult row.
     The actual computation happens later in execute_backtest, run
     out-of-process by a Celery worker (see tasks.py)."""
@@ -35,6 +40,11 @@ async def create_pending_backtest(strategy_id: int, ticker: str, start_date: str
     except ValueError:
         raise HTTPException(status_code=400, detail="start_date and end_date must be ISO-formatted dates (YYYY-MM-DD)")
 
+    if stop_loss_pct is not None and stop_loss_pct <= 0:
+        raise HTTPException(status_code=400, detail="stop_loss_pct must be positive")
+    if take_profit_pct is not None and take_profit_pct <= 0:
+        raise HTTPException(status_code=400, detail="take_profit_pct must be positive")
+
     result_record = BacktestResult(
         strategy_id=strategy_id,
         ticker=ticker,
@@ -43,6 +53,9 @@ async def create_pending_backtest(strategy_id: int, ticker: str, start_date: str
         initial_capital=initial_capital,
         commission_pct=commission_pct,
         slippage_pct=slippage_pct,
+        allow_short=allow_short,
+        stop_loss_pct=stop_loss_pct,
+        take_profit_pct=take_profit_pct,
         status="pending",
     )
     db.add(result_record)
@@ -105,6 +118,8 @@ async def execute_backtest(backtest_result_id: int, db: AsyncSession) -> None:
         backtest_results = executor.backtest(
             df, initial_capital=record.initial_capital,
             commission_pct=record.commission_pct, slippage_pct=record.slippage_pct,
+            allow_short=record.allow_short, stop_loss_pct=record.stop_loss_pct,
+            take_profit_pct=record.take_profit_pct,
         )
     except Exception as e:
         await db.rollback()

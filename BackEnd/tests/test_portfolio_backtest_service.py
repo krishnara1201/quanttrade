@@ -561,3 +561,66 @@ async def test_run_portfolio_backtest_endpoint_succeeds(session_factory, portfol
         )
         record = result.scalars().first()
     assert record.status == "success"
+
+
+@pytest.mark.asyncio
+async def test_create_pending_portfolio_backtest_persists_allow_short_and_stop_loss_take_profit(session_factory, portfolio_seeded):
+    async with session_factory() as db:
+        user = await _reload_user(session_factory, portfolio_seeded["user_id"])
+        record = await portfolio_backtest_service.create_pending_portfolio_backtest(
+            portfolio_seeded["strategy_id"],
+            [{"ticker": "AAPL", "weight": 1}, {"ticker": "MSFT", "weight": 1}],
+            "2024-01-01", "2024-01-05",
+            10000.0, 0.1, 0.05,
+            db, user,
+            allow_short=True, stop_loss_pct=2.5, take_profit_pct=5.0,
+        )
+    assert record.allow_short is True
+    assert record.stop_loss_pct == 2.5
+    assert record.take_profit_pct == 5.0
+
+
+@pytest.mark.asyncio
+async def test_create_pending_portfolio_backtest_rejects_non_positive_take_profit_pct(session_factory, portfolio_seeded):
+    async with session_factory() as db:
+        user = await _reload_user(session_factory, portfolio_seeded["user_id"])
+        with pytest.raises(ValueError, match="take_profit_pct must be positive"):
+            await portfolio_backtest_service.create_pending_portfolio_backtest(
+                portfolio_seeded["strategy_id"],
+                [{"ticker": "AAPL", "weight": 1}, {"ticker": "MSFT", "weight": 1}],
+                "2024-01-01", "2024-01-05",
+                10000.0, 0.1, 0.05,
+                db, user,
+                take_profit_pct=-1.0,
+            )
+
+
+@pytest.mark.asyncio
+async def test_execute_portfolio_backtest_passes_allow_short_and_stop_loss_take_profit_to_executor(session_factory, portfolio_seeded, monkeypatch):
+    from services.strategy_executor import StrategyExecutor
+    captured_calls = []
+    original_backtest = StrategyExecutor.backtest
+
+    def spying_backtest(self, df, **kwargs):
+        captured_calls.append(kwargs)
+        return original_backtest(self, df, **kwargs)
+
+    monkeypatch.setattr(StrategyExecutor, "backtest", spying_backtest)
+
+    async with session_factory() as db:
+        user = await _reload_user(session_factory, portfolio_seeded["user_id"])
+        record = await portfolio_backtest_service.create_pending_portfolio_backtest(
+            portfolio_seeded["strategy_id"],
+            [{"ticker": "AAPL", "weight": 1}, {"ticker": "MSFT", "weight": 1}],
+            "2024-01-01", "2024-01-05",
+            10000.0, 0.1, 0.05,
+            db, user,
+            allow_short=True, stop_loss_pct=2.5, take_profit_pct=5.0,
+        )
+        await portfolio_backtest_service.execute_portfolio_backtest(record.id, db)
+
+    assert len(captured_calls) == 2  # one per ticker (AAPL, MSFT)
+    for kwargs in captured_calls:
+        assert kwargs["allow_short"] is True
+        assert kwargs["stop_loss_pct"] == 2.5
+        assert kwargs["take_profit_pct"] == 5.0
