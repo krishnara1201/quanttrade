@@ -434,6 +434,16 @@ textarea {
   color: var(--danger);
 }
 
+.badge.direction-long {
+  background: rgba(93, 162, 255, 0.2);
+  color: #5da2ff;
+}
+
+.badge.direction-short {
+  background: rgba(255, 184, 108, 0.2);
+  color: #ffb86c;
+}
+
 .profit {
   color: var(--accent);
   font-weight: 600;

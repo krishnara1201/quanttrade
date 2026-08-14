@@ -213,8 +213,16 @@ export default function BacktestResultsPage() {
                         <span className={`badge ${trade.type === 'entry' ? 'entry' : 'exit'}`}>
                           {trade.type.toUpperCase()}
                         </span>
+                        <span className={`badge direction-${trade.direction === 'short' ? 'short' : 'long'}`}>
+                          {trade.direction === 'short' ? 'SHORT' : 'LONG'}
+                        </span>
                         <span>${trade.price.toFixed(2)}</span>
                         <span className="muted">{trade.date}</span>
+                        {trade.exit_reason && trade.exit_reason !== 'signal' && (
+                          <span className="muted">
+                            {trade.exit_reason === 'stop_loss' ? 'Stopped out' : 'Took profit'}
+                          </span>
+                        )}
                         {trade.pnl && <span className={trade.pnl > 0 ? 'profit' : 'loss'}>
                           {trade.pnl > 0 ? '+' : ''}{trade.pnl.toFixed(2)}
                         </span>}
