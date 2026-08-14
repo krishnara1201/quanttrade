@@ -247,18 +247,22 @@ async def _reload_user(session_factory, user_id):
 
 
 @pytest.mark.asyncio
-async def test_run_portfolio_backtest_allocates_and_aggregates(session_factory, portfolio_seeded):
+async def test_create_and_execute_portfolio_backtest_allocates_and_aggregates(session_factory, portfolio_seeded):
     async with session_factory() as db:
         user = await _reload_user(session_factory, portfolio_seeded["user_id"])
-        response = await portfolio_backtest_service.run_portfolio_backtest(
+        record = await portfolio_backtest_service.create_pending_portfolio_backtest(
             portfolio_seeded["strategy_id"],
             [{"ticker": "AAPL", "weight": 1}, {"ticker": "MSFT", "weight": 1}],
             "2024-01-01", "2024-01-05",
             10000.0, 0.1, 0.05,
             db, user,
         )
+        assert record.status == "pending"
+        await portfolio_backtest_service.execute_portfolio_backtest(record.id, db)
+        await db.refresh(record)
 
-    assert response["allocations"] == [
+    assert record.status == "success"
+    assert record.allocations == [
         {"ticker": "AAPL", "weight": pytest.approx(0.5)},
         {"ticker": "MSFT", "weight": pytest.approx(0.5)},
     ]
@@ -266,21 +270,23 @@ async def test_run_portfolio_backtest_allocates_and_aggregates(session_factory, 
     # prior bar transition here (rules mode only evaluates from index 1), so with a
     # constant entry condition true from bar 1 onward AAPL/MSFT do open a position;
     # the exact P&L isn't asserted — this test verifies orchestration and shape.
-    assert set(response["per_ticker"].keys()) == {"AAPL", "MSFT"}
-    assert response["per_ticker"]["AAPL"]["allocated_capital"] == pytest.approx(5000.0)
-    assert response["per_ticker"]["MSFT"]["allocated_capital"] == pytest.approx(5000.0)
-    assert len(response["equity_curve"]) == 5
-    assert "return_pct" in response["metrics"]
+    assert set(record.per_ticker.keys()) == {"AAPL", "MSFT"}
+    assert record.per_ticker["AAPL"]["allocated_capital"] == pytest.approx(5000.0)
+    assert record.per_ticker["MSFT"]["allocated_capital"] == pytest.approx(5000.0)
+    assert len(record.equity_curve) == 5
+    assert "return_pct" in record.results
 
 
 @pytest.mark.asyncio
 async def test_run_portfolio_backtest_raises_value_error_when_no_bars_in_requested_range(session_factory):
     """A ticker's global min/max can satisfy _check_ticker_coverage while the
     requested window still contains zero bars for that ticker (bars only at
-    the endpoints, none in between). The per-ticker MarketData query then
-    returns an empty result set, and building a DataFrame from it must not
-    reach `df.set_index("date", ...)` and blow up with an uncaught KeyError —
-    it should surface as a clean ValueError (-> HTTP 400) instead."""
+    the endpoints, none in between). create_pending_portfolio_backtest only
+    runs _check_ticker_coverage, so it still succeeds; the per-ticker
+    MarketData query happens later in execute_portfolio_backtest, where it
+    returns an empty result set. Building a DataFrame from it must not reach
+    `df.set_index("date", ...)` and blow up with an uncaught KeyError — it
+    should surface as a clean failed status + error_message instead."""
     async with session_factory() as db:
         user = User(name="Ada", email="ada@example.com", password_hash="x")
         db.add(user)
@@ -322,15 +328,19 @@ async def test_run_portfolio_backtest_raises_value_error_when_no_bars_in_request
 
     async with session_factory() as db:
         user = await _reload_user(session_factory, user_id)
-        with pytest.raises(ValueError, match="AAPL") as exc_info:
-            await portfolio_backtest_service.run_portfolio_backtest(
-                strategy_id,
-                [{"ticker": "AAPL", "weight": 1}, {"ticker": "MSFT", "weight": 1}],
-                "2024-01-03", "2024-01-07",
-                10000.0, 0.1, 0.05,
-                db, user,
-            )
-        assert not isinstance(exc_info.value, KeyError)
+        record = await portfolio_backtest_service.create_pending_portfolio_backtest(
+            strategy_id,
+            [{"ticker": "AAPL", "weight": 1}, {"ticker": "MSFT", "weight": 1}],
+            "2024-01-03", "2024-01-07",
+            10000.0, 0.1, 0.05,
+            db, user,
+        )
+        assert record.status == "pending"
+        await portfolio_backtest_service.execute_portfolio_backtest(record.id, db)
+        await db.refresh(record)
+
+    assert record.status == "failed"
+    assert "AAPL" in record.error_message
 
 
 @pytest.mark.asyncio
@@ -338,7 +348,7 @@ async def test_run_portfolio_backtest_rejects_insufficient_coverage(session_fact
     async with session_factory() as db:
         user = await _reload_user(session_factory, portfolio_seeded["user_id"])
         with pytest.raises(ValueError, match="AAPL"):
-            await portfolio_backtest_service.run_portfolio_backtest(
+            await portfolio_backtest_service.create_pending_portfolio_backtest(
                 portfolio_seeded["strategy_id"],
                 [{"ticker": "AAPL", "weight": 1}, {"ticker": "MSFT", "weight": 1}],
                 "2023-01-01", "2024-01-05",  # AAPL/MSFT data only starts 2024-01-01
@@ -361,7 +371,7 @@ async def test_run_portfolio_backtest_does_not_raise_missing_greenlet_on_unautho
         result = await db.execute(select(User).where(User.id == other_user.id))
         bob = result.scalars().first()
         with pytest.raises(ValueError, match="Unauthorized"):
-            await portfolio_backtest_service.run_portfolio_backtest(
+            await portfolio_backtest_service.create_pending_portfolio_backtest(
                 portfolio_seeded["strategy_id"],
                 [{"ticker": "AAPL", "weight": 1}, {"ticker": "MSFT", "weight": 1}],
                 "2024-01-01", "2024-01-05",
@@ -374,13 +384,14 @@ async def test_run_portfolio_backtest_does_not_raise_missing_greenlet_on_unautho
 async def test_get_portfolio_backtest_results_does_not_raise_missing_greenlet(session_factory, portfolio_seeded):
     async with session_factory() as db:
         user = await _reload_user(session_factory, portfolio_seeded["user_id"])
-        await portfolio_backtest_service.run_portfolio_backtest(
+        record = await portfolio_backtest_service.create_pending_portfolio_backtest(
             portfolio_seeded["strategy_id"],
             [{"ticker": "AAPL", "weight": 1}, {"ticker": "MSFT", "weight": 1}],
             "2024-01-01", "2024-01-05",
             10000.0, 0.1, 0.05,
             db, user,
         )
+        await portfolio_backtest_service.execute_portfolio_backtest(record.id, db)
 
     async with session_factory() as db:
         user = await _reload_user(session_factory, portfolio_seeded["user_id"])
@@ -396,20 +407,22 @@ async def test_get_portfolio_backtest_results_does_not_raise_missing_greenlet(se
 async def test_get_portfolio_backtest_detail_does_not_raise_missing_greenlet(session_factory, portfolio_seeded):
     async with session_factory() as db:
         user = await _reload_user(session_factory, portfolio_seeded["user_id"])
-        created = await portfolio_backtest_service.run_portfolio_backtest(
+        record = await portfolio_backtest_service.create_pending_portfolio_backtest(
             portfolio_seeded["strategy_id"],
             [{"ticker": "AAPL", "weight": 1}, {"ticker": "MSFT", "weight": 1}],
             "2024-01-01", "2024-01-05",
             10000.0, 0.1, 0.05,
             db, user,
         )
+        await portfolio_backtest_service.execute_portfolio_backtest(record.id, db)
+        created_id = record.id
 
     async with session_factory() as db:
         user = await _reload_user(session_factory, portfolio_seeded["user_id"])
         detail = await portfolio_backtest_service.get_portfolio_backtest_detail(
-            created["id"], db, user,
+            created_id, db, user,
         )
-    assert detail["id"] == created["id"]
+    assert detail["id"] == created_id
     assert set(detail["per_ticker"].keys()) == {"AAPL", "MSFT"}
 
 
@@ -438,13 +451,15 @@ async def test_get_portfolio_backtest_detail_does_not_raise_missing_greenlet_on_
     not MissingGreenlet, when accessing the ownership-check path."""
     async with session_factory() as db:
         user = await _reload_user(session_factory, portfolio_seeded["user_id"])
-        created = await portfolio_backtest_service.run_portfolio_backtest(
+        record = await portfolio_backtest_service.create_pending_portfolio_backtest(
             portfolio_seeded["strategy_id"],
             [{"ticker": "AAPL", "weight": 1}, {"ticker": "MSFT", "weight": 1}],
             "2024-01-01", "2024-01-05",
             10000.0, 0.1, 0.05,
             db, user,
         )
+        await portfolio_backtest_service.execute_portfolio_backtest(record.id, db)
+        created_id = record.id
 
     async with session_factory() as db:
         other_user = User(name="Bob", email="bob@example.com", password_hash="x")
@@ -457,7 +472,7 @@ async def test_get_portfolio_backtest_detail_does_not_raise_missing_greenlet_on_
         bob = result.scalars().first()
         with pytest.raises(ValueError, match="Unauthorized"):
             await portfolio_backtest_service.get_portfolio_backtest_detail(
-                created["id"], db, bob,
+                created_id, db, bob,
             )
 
 

@@ -124,7 +124,7 @@ def aggregate_portfolio_metrics(
     }
 
 
-async def run_portfolio_backtest(
+async def create_pending_portfolio_backtest(
     strategy_id: int,
     tickers: List[Dict[str, Any]],
     start_date: str,
@@ -134,12 +134,12 @@ async def run_portfolio_backtest(
     slippage_pct: float,
     db: AsyncSession,
     user: User,
-) -> Dict[str, Any]:
-    """Run a strategy independently across a basket of tickers, each funded
-    from a fixed weight of initial_capital, and return the aggregated
-    portfolio result. Raises ValueError for any validation/ownership/
-    execution failure — callers (e.g. the router) translate that to an
-    HTTP 400/403."""
+) -> PortfolioBacktestResult:
+    """Validate ownership/input/ticker-coverage and insert a pending
+    PortfolioBacktestResult row. The actual per-ticker execution happens
+    later in execute_portfolio_backtest, run out-of-process by a Celery
+    worker. Raises ValueError for any validation/ownership failure —
+    callers (e.g. the router) translate that to an HTTP 400/403/404."""
     strategy_result = await db.execute(
         select(Strategy).options(selectinload(Strategy.project)).where(Strategy.id == strategy_id)
     )
@@ -160,50 +160,6 @@ async def run_portfolio_backtest(
     for alloc in allocations:
         await _check_ticker_coverage(alloc["ticker"], start_dt, end_dt, db)
 
-    per_ticker_results: Dict[str, Any] = {}
-    allocated_capital: Dict[str, float] = {}
-
-    for alloc in allocations:
-        ticker = alloc["ticker"]
-        sub_capital = initial_capital * alloc["weight"]
-        allocated_capital[ticker] = sub_capital
-
-        data_result = await db.execute(
-            select(MarketData).where(
-                MarketData.ticker == ticker,
-                MarketData.date >= start_dt,
-                MarketData.date <= end_dt,
-            ).order_by(MarketData.date)
-        )
-        rows = data_result.scalars().all()
-        if not rows:
-            raise ValueError(f"No market data found for {ticker} between {start_dt.date()} and {end_dt.date()}")
-        df = pd.DataFrame([
-            {
-                "date": r.date, "open": float(r.open), "high": float(r.high),
-                "low": float(r.low), "close": float(r.close), "volume": float(r.volume),
-            }
-            for r in rows
-        ])
-        df.set_index("date", inplace=True)
-
-        try:
-            executor = StrategyExecutor(strategy.parameters, code=strategy.code)
-            result = executor.backtest(
-                df, initial_capital=sub_capital,
-                commission_pct=commission_pct, slippage_pct=slippage_pct,
-            )
-        except Exception as e:
-            raise ValueError(f"Backtest execution failed for {ticker}: {str(e)}")
-
-        per_ticker_results[ticker] = {**result, "allocated_capital": sub_capital}
-
-    portfolio_equity_curve = aggregate_equity_curves(
-        {t: r["equity_curve"] for t, r in per_ticker_results.items()},
-        allocated_capital,
-    )
-    metrics = aggregate_portfolio_metrics(per_ticker_results, portfolio_equity_curve, initial_capital)
-
     record = PortfolioBacktestResult(
         strategy_id=strategy_id,
         start_date=start_dt,
@@ -212,23 +168,89 @@ async def run_portfolio_backtest(
         commission_pct=commission_pct,
         slippage_pct=slippage_pct,
         allocations=allocations,
-        results=metrics,
-        equity_curve=portfolio_equity_curve,
-        per_ticker=per_ticker_results,
+        status="pending",
     )
     db.add(record)
     await db.commit()
     await db.refresh(record)
+    return record
 
-    return {
-        "id": record.id,
-        "strategy_id": strategy_id,
-        "allocations": allocations,
-        "metrics": metrics,
-        "equity_curve": portfolio_equity_curve,
-        "per_ticker": per_ticker_results,
-        "created_at": record.created_at.isoformat(),
-    }
+
+async def execute_portfolio_backtest(portfolio_backtest_id: int, db: AsyncSession) -> None:
+    """Run each ticker's sub-backtest for an already-created pending
+    PortfolioBacktestResult row and write the aggregated outcome back onto
+    that row. Runs inside a Celery worker via asyncio.run(). Never raises —
+    failure is recorded on the row as status='failed' + error_message."""
+    result = await db.execute(
+        select(PortfolioBacktestResult)
+        .options(selectinload(PortfolioBacktestResult.strategy))
+        .where(PortfolioBacktestResult.id == portfolio_backtest_id)
+    )
+    record = result.scalars().first()
+    if record is None:
+        return
+
+    record.status = "running"
+    await db.commit()
+
+    try:
+        strategy = record.strategy
+        per_ticker_results: Dict[str, Any] = {}
+        allocated_capital: Dict[str, float] = {}
+
+        for alloc in record.allocations:
+            ticker = alloc["ticker"]
+            sub_capital = record.initial_capital * alloc["weight"]
+            allocated_capital[ticker] = sub_capital
+
+            data_result = await db.execute(
+                select(MarketData).where(
+                    MarketData.ticker == ticker,
+                    MarketData.date >= record.start_date,
+                    MarketData.date <= record.end_date,
+                ).order_by(MarketData.date)
+            )
+            rows = data_result.scalars().all()
+            if not rows:
+                raise ValueError(
+                    f"No market data found for {ticker} between {record.start_date.date()} and {record.end_date.date()}"
+                )
+            df = pd.DataFrame([
+                {
+                    "date": r.date, "open": float(r.open), "high": float(r.high),
+                    "low": float(r.low), "close": float(r.close), "volume": float(r.volume),
+                }
+                for r in rows
+            ])
+            df.set_index("date", inplace=True)
+
+            try:
+                executor = StrategyExecutor(strategy.parameters, code=strategy.code)
+                ticker_result = executor.backtest(
+                    df, initial_capital=sub_capital,
+                    commission_pct=record.commission_pct, slippage_pct=record.slippage_pct,
+                )
+            except Exception as e:
+                raise ValueError(f"Backtest execution failed for {ticker}: {str(e)}")
+
+            per_ticker_results[ticker] = {**ticker_result, "allocated_capital": sub_capital}
+
+        portfolio_equity_curve = aggregate_equity_curves(
+            {t: r["equity_curve"] for t, r in per_ticker_results.items()},
+            allocated_capital,
+        )
+        metrics = aggregate_portfolio_metrics(per_ticker_results, portfolio_equity_curve, record.initial_capital)
+    except Exception as e:
+        record.status = "failed"
+        record.error_message = str(e)
+        await db.commit()
+        return
+
+    record.results = metrics
+    record.equity_curve = portfolio_equity_curve
+    record.per_ticker = per_ticker_results
+    record.status = "success"
+    await db.commit()
 
 
 async def get_portfolio_backtest_results(strategy_id: int, db: AsyncSession, user: User) -> List[Dict[str, Any]]:
@@ -251,6 +273,7 @@ async def get_portfolio_backtest_results(strategy_id: int, db: AsyncSession, use
             "id": r.id,
             "strategy_id": r.strategy_id,
             "allocations": r.allocations,
+            "status": r.status,
             "metrics": r.results,
             "created_at": r.created_at.isoformat(),
         }
@@ -275,6 +298,8 @@ async def get_portfolio_backtest_detail(portfolio_backtest_id: int, db: AsyncSes
         "id": record.id,
         "strategy_id": record.strategy_id,
         "allocations": record.allocations,
+        "status": record.status,
+        "error_message": record.error_message,
         "metrics": record.results,
         "equity_curve": record.equity_curve,
         "per_ticker": record.per_ticker,
