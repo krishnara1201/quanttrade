@@ -21,6 +21,7 @@ from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
 
 from database.models import Base, User, MarketData
 from routers import data as data_router
+from services import data_import_service
 
 
 @pytest_asyncio.fixture
@@ -52,7 +53,7 @@ async def test_bulk_upsert_inserts_new_bars(session_factory):
         {"date": "2024-01-03", "open": 1.5, "high": 2.5, "low": 1, "close": 2, "volume": 200},
     ])
     async with session_factory() as db:
-        result = await data_router._bulk_upsert_market_data("AAPL", df, db)
+        result = await data_import_service._bulk_upsert_market_data("AAPL", df, db)
     assert result == {"ticker": "AAPL", "inserted": 2, "skipped": 0}
 
 
@@ -70,7 +71,7 @@ async def test_bulk_upsert_skips_bars_already_stored(session_factory):
         {"date": "2024-01-03", "open": 1.5, "high": 2.5, "low": 1, "close": 2, "volume": 200},  # new
     ])
     async with session_factory() as db:
-        result = await data_router._bulk_upsert_market_data("AAPL", df, db)
+        result = await data_import_service._bulk_upsert_market_data("AAPL", df, db)
     assert result == {"ticker": "AAPL", "inserted": 1, "skipped": 1}
 
     async with session_factory() as db:
@@ -83,7 +84,7 @@ async def test_bulk_upsert_rejects_missing_columns(session_factory):
     df = pd.DataFrame([{"date": "2024-01-02", "open": 1, "close": 1.5}])
     async with session_factory() as db:
         with pytest.raises(ValueError, match="missing required column"):
-            await data_router._bulk_upsert_market_data("AAPL", df, db)
+            await data_import_service._bulk_upsert_market_data("AAPL", df, db)
 
 
 @pytest.mark.asyncio
@@ -92,7 +93,7 @@ async def test_bulk_upsert_normalizes_column_names_and_keeps_adj_close(session_f
         {"Date": "2024-01-02", "Open": 1, "High": 2, "Low": 0.5, "Close": 1.5, "Volume": 100, "Adj Close": 1.49},
     ])
     async with session_factory() as db:
-        result = await data_router._bulk_upsert_market_data("AAPL", df, db)
+        result = await data_import_service._bulk_upsert_market_data("AAPL", df, db)
     assert result == {"ticker": "AAPL", "inserted": 1, "skipped": 0}
 
     async with session_factory() as db:
@@ -158,7 +159,7 @@ async def test_bulk_upsert_parses_yyyymmdd_integer_dates(session_factory):
         {"date": 19840910, "open": 0.099173, "high": 0.099477, "low": 0.096788, "close": 0.098584, "volume": 77028276},
     ])
     async with session_factory() as db:
-        result = await data_router._bulk_upsert_market_data("AAPL", df, db)
+        result = await data_import_service._bulk_upsert_market_data("AAPL", df, db)
     assert result == {"ticker": "AAPL", "inserted": 2, "skipped": 0}
 
     async with session_factory() as db:

@@ -1,6 +1,4 @@
-import io
 import os
-import re
 from datetime import datetime
 from typing import Optional
 
@@ -13,134 +11,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from database.models import User, Project, Strategy, MarketData
 from database.connection import AsyncSessionLocal, get_db
 from services.auth_service import get_current_user
+from services.data_import_service import ALPHA_VANTAGE_URL, _split_bar_groups, _bulk_upsert_market_data
 
 router = APIRouter(prefix="/api/data", tags=["data"])
 
-# Alpha Vantage's documented free-tier REST API (https://www.alphavantage.co/support/#api-key)
-# for daily OHLCV history. A free key takes under a minute to claim and needs
-# no card. Falls back to the public "demo" key, which Alpha Vantage restricts
-# to a handful of sample symbols (e.g. IBM) — real use requires a real key,
-# either set server-side via ALPHA_VANTAGE_API_KEY or passed per-request.
-#
-# Earlier this hit Stooq's CSV export instead, which is unauthenticated and
-# needs no key — but Stooq now gates that endpoint behind a JS proof-of-work
-# challenge aimed at blocking exactly this kind of scripted request, so it no
-# longer returns data to a server-side client. Solving that challenge would
-# mean building bot-detection evasion, which isn't something to do here;
-# Alpha Vantage is the documented, ToS-compliant replacement.
-ALPHA_VANTAGE_URL = "https://www.alphavantage.co/query"
-
-REQUIRED_BAR_COLUMNS = {"date", "open", "high", "low", "close", "volume"}
-
-# Stooq's per-symbol export format: one row per bar, no ownership/auth
-# concerns since it's the same public OHLCV shape as the CSV path, just
-# headerless with the ticker embedded in column 0 as `SYMBOL.COUNTRY` (e.g.
-# `AAPL.US`), optionally preceded by a `<TICKER>,<PER>,...` header row.
-_STOOQ_SYMBOL_RE = re.compile(r"^[A-Za-z0-9^_-]+\.[A-Za-z]{1,3}$")
-_STOOQ_COLUMNS = ["ticker", "period", "date", "time", "open", "high", "low", "close", "volume", "openint"]
-
-
-def _parse_bar_dates(series: pd.Series) -> pd.Series:
-    """Parse a date column that's either a normal date string (left to
-    pandas' own inference) or a bare YYYYMMDD value (Excel/Stooq-style
-    exports store dates as e.g. 19840907, not "1984-09-07"). Without an
-    explicit format, `pd.to_datetime` on a raw 8-digit number reads it as
-    nanoseconds-since-epoch instead of a calendar date — 19840907 becomes
-    1970-01-01T00:00:00.019840907, not 1984-09-07 — so that shape needs
-    `format="%Y%m%d"` applied explicitly."""
-    text = series.astype(str).str.strip()
-    non_null = text[series.notna()]
-    if not non_null.empty and non_null.str.fullmatch(r"\d{8}").all():
-        return pd.to_datetime(text, format="%Y%m%d", errors="coerce")
-    return pd.to_datetime(series)
-
-
-def _split_bar_groups(content: bytes, ticker: Optional[str]) -> list[tuple[str, pd.DataFrame]]:
-    """Parse an uploaded market-data file into one or more (ticker, DataFrame)
-    groups. Two shapes are supported:
-      - a header'd OHLCV CSV (Date/Open/High/Low/Close/Volume, e.g. a Yahoo
-        Finance/broker export) — the long-standing format; `ticker` must be
-        supplied by the caller since the file itself doesn't carry one.
-      - a Stooq-style per-symbol export, headerless or with a `<TICKER>,...`
-        header, one row per bar as `TICKER.COUNTRY,PERIOD,YYYYMMDD,HHMMSS,
-        OPEN,HIGH,LOW,CLOSE,VOLUME,OPENINT` — the ticker is read off each row
-        instead (country suffix stripped), so `ticker` is optional and a file
-        spanning multiple symbols is split into one group per symbol.
-    """
-    text = content.decode("utf-8-sig", errors="replace")
-    first_line = next((line for line in text.splitlines() if line.strip()), "")
-    first_cell = first_line.split(",")[0].strip()
-    is_stooq_header = first_cell.upper() == "<TICKER>"
-    is_stooq_data = bool(_STOOQ_SYMBOL_RE.match(first_cell))
-
-    if is_stooq_header or is_stooq_data:
-        df = pd.read_csv(
-            io.StringIO(text),
-            header=0 if is_stooq_header else None,
-            names=None if is_stooq_header else _STOOQ_COLUMNS,
-        )
-        df = df.rename(columns={c: c.strip().lower().strip("<>") for c in df.columns})
-        df = df.rename(columns={"per": "period", "vol": "volume"})
-        missing = {"ticker", "date", "open", "high", "low", "close", "volume"} - set(df.columns)
-        if missing:
-            raise ValueError(f"Data is missing required column(s): {', '.join(sorted(missing))}")
-        df["ticker"] = df["ticker"].astype(str).str.split(".").str[0].str.upper()
-        return [(symbol, group.drop(columns=["ticker"])) for symbol, group in df.groupby("ticker", sort=True)]
-
-    try:
-        df = pd.read_csv(io.BytesIO(content))
-    except Exception as e:
-        raise ValueError(f"Could not parse file: {e}")
-    if not ticker:
-        raise ValueError("ticker is required for this file format")
-    return [(ticker, df)]
-
-
-async def _bulk_upsert_market_data(ticker: str, df: pd.DataFrame, db: AsyncSession) -> dict:
-    """Insert bars from `df` for `ticker`, skipping any (ticker, date) pair
-    already stored — shared by the CSV-upload and web-import endpoints so both
-    behave the same way around duplicates and column parsing."""
-    df = df.rename(columns={c: c.strip().lower().replace(" ", "_") for c in df.columns})
-    missing = REQUIRED_BAR_COLUMNS - set(df.columns)
-    if missing:
-        raise ValueError(f"Data is missing required column(s): {', '.join(sorted(missing))}")
-
-    df["date"] = _parse_bar_dates(df["date"])
-    df = df.dropna(subset=["date", "open", "high", "low", "close", "volume"])
-    if df.empty:
-        return {"ticker": ticker, "inserted": 0, "skipped": 0}
-
-    existing_result = await db.execute(
-        select(MarketData.date).where(
-            MarketData.ticker == ticker,
-            MarketData.date.in_(df["date"].tolist()),
-        )
-    )
-    seen_dates = set(existing_result.scalars().all())
-
-    has_adj_close = "adj_close" in df.columns
-    inserted = 0
-    for rec in df.to_dict("records"):
-        row_date = rec["date"]
-        if hasattr(row_date, "to_pydatetime"):
-            row_date = row_date.to_pydatetime()
-        if row_date in seen_dates:
-            continue
-        db.add(MarketData(
-            ticker=ticker,
-            date=row_date,
-            open=str(rec["open"]),
-            high=str(rec["high"]),
-            low=str(rec["low"]),
-            close=str(rec["close"]),
-            volume=str(rec["volume"]),
-            adj_close=str(rec["adj_close"]) if has_adj_close and pd.notna(rec.get("adj_close")) else None,
-        ))
-        seen_dates.add(row_date)
-        inserted += 1
-
-    await db.commit()
-    return {"ticker": ticker, "inserted": inserted, "skipped": len(df) - inserted}
 
 class MarketDataCreate(BaseModel):
     ticker: str
