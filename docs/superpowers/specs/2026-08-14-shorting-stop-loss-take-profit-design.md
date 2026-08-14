@@ -18,7 +18,7 @@ Explicitly out of scope for this pass: ATR-based (volatility-adjusted) stops, in
 No change to how rules-mode or custom-code strategies *produce* signals — both still emit `{1, -1, 0}` per bar, unchanged. The reinterpretation lives entirely in `_execute_trades`:
 
 - `allow_short=False` (default): byte-identical to current behavior. `signal=1` opens long if flat; `signal=-1` closes a long if one's open; otherwise no-op.
-- `allow_short=True`: `signal=1` while short covers the short and, same bar, can then open a new long; `signal=-1` while flat opens a short; `signal=-1` while long still closes the long (unchanged); `signal=1` while flat still opens a long (unchanged). Note this cover-then-reopen behavior is new — today's `signal` column encodes at most one action per bar (an entry *or* an exit, never both), so no same-bar transition of any kind currently exists to mirror.
+- `allow_short=True`: `signal=1` while short covers the short and, same bar, can then open a new long; `signal=-1` while flat opens a short; `signal=-1` while long closes the long and, since the account is then flat, can also open a new short the same bar — symmetric to the cover-then-reopen-long case above; `signal=1` while flat still opens a long (unchanged). Note both of these same-bar close-then-reopen behaviors are new — today's `signal` column encodes at most one action per bar (an entry *or* an exit, never both), so no same-bar transition of any kind currently exists to mirror.
 
 ### Position state
 
