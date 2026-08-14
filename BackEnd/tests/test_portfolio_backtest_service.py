@@ -351,3 +351,62 @@ async def test_get_portfolio_backtest_detail_does_not_raise_missing_greenlet(ses
         )
     assert detail["id"] == created["id"]
     assert set(detail["per_ticker"].keys()) == {"AAPL", "MSFT"}
+
+
+@pytest.mark.asyncio
+async def test_get_portfolio_backtest_results_does_not_raise_missing_greenlet_on_unauthorized(session_factory, portfolio_seeded):
+    """Ownership-check regression: a non-owning user must get a clean error,
+    not MissingGreenlet, when accessing the ownership-check path."""
+    async with session_factory() as db:
+        other_user = User(name="Bob", email="bob@example.com", password_hash="x")
+        db.add(other_user)
+        await db.commit()
+        await db.refresh(other_user)
+
+    async with session_factory() as db:
+        result = await db.execute(select(User).where(User.id == other_user.id))
+        bob = result.scalars().first()
+        with pytest.raises(ValueError, match="Unauthorized"):
+            await portfolio_backtest_service.get_portfolio_backtest_results(
+                portfolio_seeded["strategy_id"], db, bob,
+            )
+
+
+@pytest.mark.asyncio
+async def test_get_portfolio_backtest_detail_does_not_raise_missing_greenlet_on_unauthorized(session_factory, portfolio_seeded):
+    """Ownership-check regression: a non-owning user must get a clean error,
+    not MissingGreenlet, when accessing the ownership-check path."""
+    async with session_factory() as db:
+        user = await _reload_user(session_factory, portfolio_seeded["user_id"])
+        created = await portfolio_backtest_service.run_portfolio_backtest(
+            portfolio_seeded["strategy_id"],
+            [{"ticker": "AAPL", "weight": 1}, {"ticker": "MSFT", "weight": 1}],
+            "2024-01-01", "2024-01-05",
+            10000.0, 0.1, 0.05,
+            db, user,
+        )
+
+    async with session_factory() as db:
+        other_user = User(name="Bob", email="bob@example.com", password_hash="x")
+        db.add(other_user)
+        await db.commit()
+        await db.refresh(other_user)
+
+    async with session_factory() as db:
+        result = await db.execute(select(User).where(User.id == other_user.id))
+        bob = result.scalars().first()
+        with pytest.raises(ValueError, match="Unauthorized"):
+            await portfolio_backtest_service.get_portfolio_backtest_detail(
+                created["id"], db, bob,
+            )
+
+
+@pytest.mark.asyncio
+async def test_get_portfolio_backtest_detail_raises_not_found_for_missing_id(session_factory, portfolio_seeded):
+    """get_portfolio_backtest_detail rejects a nonexistent portfolio backtest id."""
+    async with session_factory() as db:
+        user = await _reload_user(session_factory, portfolio_seeded["user_id"])
+        with pytest.raises(ValueError, match="not found"):
+            await portfolio_backtest_service.get_portfolio_backtest_detail(
+                99999, db, user,
+            )
