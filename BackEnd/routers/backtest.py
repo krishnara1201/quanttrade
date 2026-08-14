@@ -7,10 +7,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from database.models import User, Strategy, BacktestResult
 from database.connection import get_db
 from services.auth_service import get_current_user
-from services.backtest_service import run_backtest, get_backtest_results
+from services.backtest_service import create_pending_backtest, get_backtest_results
 from services.portfolio_backtest_service import (
-    run_portfolio_backtest, get_portfolio_backtest_results, get_portfolio_backtest_detail,
+    create_pending_portfolio_backtest, get_portfolio_backtest_results, get_portfolio_backtest_detail,
 )
+from tasks import run_backtest_task, run_portfolio_backtest_task
 from datetime import datetime
 
 router = APIRouter(prefix="/api/backtest", tags=["backtest"])
@@ -43,18 +44,19 @@ async def run_backtest_endpoint(
     db: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_user)
 ):
-    """Run a backtest for a strategy"""
-    return await run_backtest(
-        req.strategy_id,
-        req.ticker,
-        req.start_date,
-        req.end_date,
-        req.initial_capital,
-        req.commission_pct,
-        req.slippage_pct,
-        db,
-        user
+    """Create a pending backtest and enqueue it for async execution."""
+    record = await create_pending_backtest(
+        req.strategy_id, req.ticker, req.start_date, req.end_date,
+        req.initial_capital, req.commission_pct, req.slippage_pct,
+        db, user,
     )
+    run_backtest_task.delay(record.id)
+    return {
+        'id': record.id,
+        'strategy_id': record.strategy_id,
+        'status': record.status,
+        'created_at': record.created_at.isoformat(),
+    }
 
 @router.get("/results/{strategy_id}")
 async def get_backtest_results_endpoint(
@@ -78,11 +80,10 @@ async def get_backtest_detail(
         .where(BacktestResult.id == backtest_id)
     )
     backtest = result.scalars().first()
-    
+
     if not backtest:
         raise HTTPException(status_code=404, detail="Backtest not found")
 
-    # Verify ownership
     strategy = backtest.strategy
     if strategy.project.owner_id != user.id:
         raise HTTPException(status_code=403, detail="Unauthorized")
@@ -90,6 +91,8 @@ async def get_backtest_detail(
     return {
         'id': backtest.id,
         'strategy_id': backtest.strategy_id,
+        'status': backtest.status,
+        'error_message': backtest.error_message,
         'metrics': backtest.results,
         'trades': backtest.trades,
         'signals': backtest.signals,
@@ -103,10 +106,9 @@ async def run_portfolio_backtest_endpoint(
     db: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_user)
 ):
-    """Run a portfolio backtest: one strategy across a basket of tickers,
-    each funded from a custom fixed weight of initial_capital."""
+    """Create a pending portfolio backtest and enqueue it for async execution."""
     try:
-        return await run_portfolio_backtest(
+        record = await create_pending_portfolio_backtest(
             req.strategy_id,
             [t.model_dump() for t in req.tickers],
             req.start_date,
@@ -120,6 +122,15 @@ async def run_portfolio_backtest_endpoint(
     except ValueError as e:
         status_code = 403 if str(e) == "Unauthorized" else (404 if "not found" in str(e) else 400)
         raise HTTPException(status_code=status_code, detail=str(e))
+
+    run_portfolio_backtest_task.delay(record.id)
+    return {
+        "id": record.id,
+        "strategy_id": record.strategy_id,
+        "allocations": record.allocations,
+        "status": record.status,
+        "created_at": record.created_at.isoformat(),
+    }
 
 @router.get("/portfolio/results/{strategy_id}")
 async def get_portfolio_backtest_results_endpoint(

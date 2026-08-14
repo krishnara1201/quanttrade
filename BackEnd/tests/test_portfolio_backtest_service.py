@@ -2,6 +2,7 @@
 multiple tickers with custom fixed weights, aggregated into one portfolio
 equity curve/metrics on top of the existing single-ticker StrategyExecutor.
 """
+import concurrent.futures
 import json
 from datetime import datetime
 
@@ -15,11 +16,20 @@ from services.portfolio_backtest_service import normalize_weights, _check_ticker
 
 
 @pytest_asyncio.fixture
-async def session_factory():
+async def session_factory(monkeypatch):
     engine = create_async_engine("sqlite+aiosqlite:///:memory:")
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
     factory = async_sessionmaker(engine, expire_on_commit=False)
+
+    # A couple of tests below exercise run_portfolio_backtest_endpoint, which
+    # (post-Task-7) enqueues a Celery task. Under task_always_eager that task
+    # body resolves its own DB session via worker_db.get_worker_session_factory()
+    # (normally pointed at Postgres) rather than this fixture's session — redirect
+    # it at this same in-memory sqlite engine, mirroring tests/test_celery_tasks.py.
+    import worker_db
+    monkeypatch.setattr(worker_db, "_session_factory", factory)
+
     yield factory
     await engine.dispose()
 
@@ -510,17 +520,44 @@ async def test_run_portfolio_backtest_endpoint_translates_value_error_to_400(ses
 
 
 @pytest.mark.asyncio
-async def test_run_portfolio_backtest_endpoint_succeeds(session_factory, portfolio_seeded):
+async def test_run_portfolio_backtest_endpoint_succeeds(session_factory, portfolio_seeded, monkeypatch):
+    # run_portfolio_backtest_endpoint calls run_portfolio_backtest_task.delay(...)
+    # synchronously from inside this awaited coroutine. Under task_always_eager
+    # that call runs the task body inline in the SAME thread, and the task body
+    # calls asyncio.run() (see tasks.py) — which can't nest inside the event loop
+    # that's already driving this test coroutine (wrapping the whole endpoint
+    # call in asyncio.run() on a worker thread doesn't help either: the .delay()
+    # call would then nest inside *that* wrapping asyncio.run()'s own running
+    # loop, on the same thread). So instead, patch just the .delay() call site to
+    # hand off to a brand-new OS thread with no running loop of its own — matching
+    # exactly how a real Celery worker process invokes it (a separate process,
+    # never inside a live asyncio loop) — while leaving everything else (the real
+    # task body, the real asyncio.run(), the real execute_portfolio_backtest())
+    # untouched. This is test-only scaffolding; routers/backtest.py itself is
+    # unmodified.
+    original_delay = backtest_router.run_portfolio_backtest_task.delay
+
+    def delay_in_new_thread(*args, **kwargs):
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+            return executor.submit(original_delay, *args, **kwargs).result()
+
+    monkeypatch.setattr(backtest_router.run_portfolio_backtest_task, "delay", delay_in_new_thread)
+
     async with session_factory() as db:
         user = await _reload_user(session_factory, portfolio_seeded["user_id"])
         req = backtest_router.PortfolioBacktestRequest(
             strategy_id=portfolio_seeded["strategy_id"],
             tickers=[
-                backtest_router.PortfolioTickerWeight(ticker="AAPL", weight=1),
+                backtest_router.PortfolioTickerWeight(ticker="AAPL", weight=2),
                 backtest_router.PortfolioTickerWeight(ticker="MSFT", weight=1),
             ],
-            start_date="2024-01-01",
-            end_date="2024-01-05",
+            start_date="2024-01-01", end_date="2024-01-05",
         )
         response = await backtest_router.run_portfolio_backtest_endpoint(req, db=db, user=user)
-    assert set(response["per_ticker"].keys()) == {"AAPL", "MSFT"}
+        assert response["status"] == "pending"
+
+        result = await db.execute(
+            select(PortfolioBacktestResult).where(PortfolioBacktestResult.id == response["id"])
+        )
+        record = result.scalars().first()
+    assert record.status == "success"
