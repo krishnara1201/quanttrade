@@ -410,3 +410,42 @@ async def test_get_portfolio_backtest_detail_raises_not_found_for_missing_id(ses
             await portfolio_backtest_service.get_portfolio_backtest_detail(
                 99999, db, user,
             )
+
+
+from fastapi import HTTPException
+
+from routers import backtest as backtest_router
+
+
+@pytest.mark.asyncio
+async def test_run_portfolio_backtest_endpoint_translates_value_error_to_400(session_factory, portfolio_seeded):
+    async with session_factory() as db:
+        user = await _reload_user(session_factory, portfolio_seeded["user_id"])
+        req = backtest_router.PortfolioBacktestRequest(
+            strategy_id=portfolio_seeded["strategy_id"],
+            tickers=[
+                backtest_router.PortfolioTickerWeight(ticker="AAPL", weight=1),
+            ],  # only 1 ticker -> normalize_weights raises
+            start_date="2024-01-01",
+            end_date="2024-01-05",
+        )
+        with pytest.raises(HTTPException) as exc_info:
+            await backtest_router.run_portfolio_backtest_endpoint(req, db=db, user=user)
+        assert exc_info.value.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_run_portfolio_backtest_endpoint_succeeds(session_factory, portfolio_seeded):
+    async with session_factory() as db:
+        user = await _reload_user(session_factory, portfolio_seeded["user_id"])
+        req = backtest_router.PortfolioBacktestRequest(
+            strategy_id=portfolio_seeded["strategy_id"],
+            tickers=[
+                backtest_router.PortfolioTickerWeight(ticker="AAPL", weight=1),
+                backtest_router.PortfolioTickerWeight(ticker="MSFT", weight=1),
+            ],
+            start_date="2024-01-01",
+            end_date="2024-01-05",
+        )
+        response = await backtest_router.run_portfolio_backtest_endpoint(req, db=db, user=user)
+    assert set(response["per_ticker"].keys()) == {"AAPL", "MSFT"}
