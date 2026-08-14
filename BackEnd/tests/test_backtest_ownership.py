@@ -63,8 +63,13 @@ async def seeded(session_factory):
 
         backtest = BacktestResult(
             strategy_id=strategy.id,
+            ticker="TEST",
             start_date=datetime(2024, 1, 1),
             end_date=datetime(2024, 1, 5),
+            initial_capital=10000.0,
+            commission_pct=0.1,
+            slippage_pct=0.05,
+            status="success",
             results={},
             trades=[],
             signals=[],
@@ -101,30 +106,39 @@ async def _reload_user(session_factory, user_id):
 
 
 @pytest.mark.asyncio
-async def test_run_backtest_does_not_raise_missing_greenlet(session_factory, seeded):
+async def test_create_and_execute_backtest_does_not_raise_missing_greenlet(session_factory, seeded):
     async with session_factory() as db:
         user = await _reload_user(session_factory, seeded["user_id"])
-        response = await backtest_service.run_backtest(
+        record = await backtest_service.create_pending_backtest(
             seeded["strategy_id"], "TEST", "2024-01-01", "2024-01-06",
             db=db, user=user,
         )
-    assert response["strategy_id"] == seeded["strategy_id"]
+        assert record.status == "pending"
+        await backtest_service.execute_backtest(record.id, db)
+        await db.refresh(record)
+    assert record.status == "success"
+    assert record.strategy_id == seeded["strategy_id"]
+    assert record.results["num_trades"] >= 0
 
 
 @pytest.mark.asyncio
-async def test_run_backtest_queries_market_data_with_datetime_not_raw_string(session_factory, seeded, monkeypatch):
+async def test_execute_backtest_queries_market_data_with_datetime_not_raw_string(session_factory, seeded, monkeypatch):
     """Regression for a prod-only bug: start_date/end_date arrive as plain
-    strings ("2024-01-01"). SQLite's DateTime bind processor passes a raw str
-    straight through unmodified, so `MarketData.date >= "2024-01-01"` quietly
-    "works" here — but Postgres/asyncpg binds it as ::VARCHAR and rejects
-    `timestamp >= varchar` outright (UndefinedFunctionError), 500ing every
-    real backtest run. This only catches the type of value SQLAlchemy binds
-    into the query (independent of dialect), which is where the bug actually
-    lives, since a SQLite-only test can't reproduce the Postgres error itself."""
+    strings ("2024-01-01") at create_pending_backtest, parsed to datetime and
+    persisted on the row (record.start_date/record.end_date). execute_backtest
+    then queries MarketData using those already-parsed datetimes. SQLite's
+    DateTime bind processor tolerates a raw str, so this bug would slip past a
+    SQLite-only test unless it inspects the bound *type* directly — see the
+    dialect-sensitivity note in CLAUDE.md."""
     captured_params = []
 
     async with session_factory() as db:
         user = await _reload_user(session_factory, seeded["user_id"])
+        record = await backtest_service.create_pending_backtest(
+            seeded["strategy_id"], "TEST", "2024-01-01", "2024-01-06",
+            db=db, user=user,
+        )
+
         original_execute = db.execute
 
         async def spying_execute(stmt, *args, **kwargs):
@@ -135,10 +149,7 @@ async def test_run_backtest_queries_market_data_with_datetime_not_raw_string(ses
 
         monkeypatch.setattr(db, "execute", spying_execute)
 
-        await backtest_service.run_backtest(
-            seeded["strategy_id"], "TEST", "2024-01-01", "2024-01-06",
-            db=db, user=user,
-        )
+        await backtest_service.execute_backtest(record.id, db)
 
     all_values = [v for params in captured_params for v in params.values()]
     assert "2024-01-01" not in all_values, "start_date leaked into the query as a raw string"
