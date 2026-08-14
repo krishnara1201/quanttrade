@@ -17,7 +17,7 @@ const STEPS = [
   },
   {
     title: 'Run a backtest',
-    body: 'Pick a ticker, date range, and starting capital.',
+    body: 'Pick a ticker, date range, and starting capital — or a weighted basket of tickers for a portfolio backtest.',
   },
   {
     title: 'Review results',
@@ -41,6 +41,10 @@ const FEATURES = [
   {
     label: 'Backtest metrics',
     body: 'Total return, win rate, Sharpe ratio, max drawdown, and a full trade-by-trade log.',
+  },
+  {
+    label: 'Portfolio backtests',
+    body: 'Run one strategy across a weighted basket of tickers and see an aggregate equity curve alongside a per-ticker breakdown.',
   },
   {
     label: 'REST API-backed',
@@ -72,6 +76,10 @@ const FAQ = [
   {
     q: 'What does a backtest show me?',
     a: 'A full trade log, an equity curve, and summary metrics (return, win rate, Sharpe ratio, max drawdown).',
+  },
+  {
+    q: 'Can I backtest a portfolio of tickers, not just one?',
+    a: 'Yes — switch a backtest to Portfolio mode, add two or more tickers with custom weights, and get an aggregate equity curve plus a per-ticker breakdown alongside the single-ticker view.',
   },
 ];
 
