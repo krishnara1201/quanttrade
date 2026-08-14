@@ -1,3 +1,4 @@
+import base64
 import os
 from datetime import datetime
 from typing import Optional
@@ -8,10 +9,11 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from pydantic import BaseModel
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
-from database.models import User, Project, Strategy, MarketData
+from database.models import User, Project, Strategy, MarketData, DataImportJob
 from database.connection import AsyncSessionLocal, get_db
 from services.auth_service import get_current_user
-from services.data_import_service import ALPHA_VANTAGE_URL, _split_bar_groups, _bulk_upsert_market_data
+from services.data_import_service import ALPHA_VANTAGE_URL, _split_bar_groups
+from tasks import import_alpha_vantage_task, upload_csv_task
 
 router = APIRouter(prefix="/api/data", tags=["data"])
 
@@ -59,7 +61,11 @@ async def upload_market_data_csv(
     (headerless `TICKER.COUNTRY,PERIOD,YYYYMMDD,HHMMSS,O,H,L,C,V,OpenInt` rows),
     which carries its own ticker per row — `ticker` is optional there, and a
     file spanning multiple symbols is imported as one group per symbol. See
-    `_split_bar_groups` for the format-detection details."""
+    `_split_bar_groups` for the format-detection details.
+
+    Validates the uploaded file's shape synchronously (so a malformed file
+    or a missing required ticker still 400s immediately), then hands the
+    actual bulk insert to a Celery task — see GET /jobs/{job_id} to poll."""
     content = await file.read()
     ticker = ticker.strip().upper() if ticker else None
 
@@ -68,13 +74,18 @@ async def upload_market_data_csv(
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
-    results = []
-    for group_ticker, group_df in groups:
-        try:
-            results.append(await _bulk_upsert_market_data(group_ticker.upper(), group_df, db))
-        except ValueError as e:
-            raise HTTPException(status_code=400, detail=str(e))
-    return results[0] if len(results) == 1 else results
+    job = DataImportJob(
+        user_id=current_user.id,
+        source="csv",
+        ticker=groups[0][0] if len(groups) == 1 else None,
+        status="pending",
+    )
+    db.add(job)
+    await db.commit()
+    await db.refresh(job)
+
+    upload_csv_task.delay(job.id, ticker, base64.b64encode(content).decode("ascii"))
+    return {"job_id": job.id, "status": job.status}
 
 @router.post("/import/{ticker}")
 async def import_market_data_from_web(
@@ -86,65 +97,47 @@ async def import_market_data_from_web(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """Fetch a ticker's daily OHLCV history from Alpha Vantage and bulk-import
-    it, so a user can populate data by ticker symbol alone instead of sourcing
-    a CSV themselves. Needs a free Alpha Vantage API key (no card required) —
-    pass one via `api_key`, or set ALPHA_VANTAGE_API_KEY server-side; without
-    either, only Alpha Vantage's demo symbols (e.g. IBM) will work.
+    """Enqueue an Alpha Vantage fetch + bulk import — so a user can populate
+    data by ticker symbol alone instead of sourcing a CSV themselves. Needs a
+    free Alpha Vantage API key (no card required) — pass one via `api_key`,
+    or set ALPHA_VANTAGE_API_KEY server-side; without either, only Alpha
+    Vantage's demo symbols (e.g. IBM) will work.
 
     Defaults to `outputsize=compact` (last ~100 daily bars) since Alpha
     Vantage now gates `outputsize=full` behind a paid plan even for
     TIME_SERIES_DAILY — pass `outputsize=full` explicitly if your key has
-    that entitlement."""
+    that entitlement. See GET /jobs/{job_id} to poll."""
     key = api_key or os.getenv("ALPHA_VANTAGE_API_KEY", "demo")
-    params = {
-        "function": "TIME_SERIES_DAILY",
-        "symbol": ticker,
-        "outputsize": outputsize,
-        "apikey": key,
+
+    job = DataImportJob(user_id=current_user.id, source="alpha_vantage", ticker=ticker.upper(), status="pending")
+    db.add(job)
+    await db.commit()
+    await db.refresh(job)
+
+    import_alpha_vantage_task.delay(
+        job.id, ticker, key, outputsize,
+        start_date.isoformat() if start_date else None,
+        end_date.isoformat() if end_date else None,
+    )
+    return {"job_id": job.id, "status": job.status}
+
+@router.get("/jobs/{job_id}")
+async def get_import_job(job_id: int, db: AsyncSession = Depends(get_db), current_user: User = Depends(get_current_user)):
+    result = await db.execute(select(DataImportJob).where(DataImportJob.id == job_id))
+    job = result.scalars().first()
+    if job is None:
+        raise HTTPException(status_code=404, detail="Import job not found")
+    if job.user_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Unauthorized")
+    return {
+        "job_id": job.id,
+        "source": job.source,
+        "ticker": job.ticker,
+        "status": job.status,
+        "result": job.result,
+        "error_message": job.error_message,
+        "created_at": job.created_at.isoformat(),
     }
-
-    try:
-        async with httpx.AsyncClient(timeout=30.0) as http_client:
-            response = await http_client.get(ALPHA_VANTAGE_URL, params=params)
-        payload = response.json()
-    except httpx.HTTPError as e:
-        raise HTTPException(status_code=502, detail=f"Could not reach data provider: {e}")
-    except ValueError as e:
-        raise HTTPException(status_code=502, detail=f"Could not parse data provider response: {e}")
-
-    time_series = payload.get("Time Series (Daily)")
-    if not time_series:
-        detail = (
-            payload.get("Error Message")
-            or payload.get("Note")
-            or payload.get("Information")
-            or f"No data found for ticker '{ticker}'"
-        )
-        status_code = 404 if "Error Message" in payload else 400
-        raise HTTPException(status_code=status_code, detail=detail)
-
-    df = pd.DataFrame([
-        {
-            "date": date_str,
-            "open": values["1. open"],
-            "high": values["2. high"],
-            "low": values["3. low"],
-            "close": values["4. close"],
-            "volume": values["5. volume"],
-        }
-        for date_str, values in time_series.items()
-    ])
-    df["date"] = pd.to_datetime(df["date"])
-    if start_date is not None:
-        df = df[df["date"] >= start_date]
-    if end_date is not None:
-        df = df[df["date"] <= end_date]
-
-    try:
-        return await _bulk_upsert_market_data(ticker.upper(), df, db)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
 
 @router.get("/tickers")
 async def get_tickers(db: AsyncSession = Depends(get_db), current_user: User = Depends(get_current_user)):

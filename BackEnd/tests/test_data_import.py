@@ -8,6 +8,7 @@ Tests for bulk market-data import in routers/data.py:
 Both share `_bulk_upsert_market_data`, which is exercised directly for
 column-parsing/duplicate-skipping behavior, plus once through each endpoint.
 """
+import concurrent.futures
 import io
 from datetime import datetime
 
@@ -25,13 +26,43 @@ from services import data_import_service
 
 
 @pytest_asyncio.fixture
-async def session_factory():
+async def session_factory(monkeypatch):
     engine = create_async_engine("sqlite+aiosqlite:///:memory:")
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
     factory = async_sessionmaker(engine, expire_on_commit=False)
+
+    # upload_market_data_csv/import_market_data_from_web (post-Task-8) enqueue
+    # Celery tasks. Under task_always_eager that task body resolves its own DB
+    # session via worker_db.get_worker_session_factory() (normally pointed at
+    # Postgres) rather than this fixture's session — redirect it at this same
+    # in-memory sqlite engine, mirroring tests/test_portfolio_backtest_service.py.
+    import worker_db
+    monkeypatch.setattr(worker_db, "_session_factory", factory)
+
     yield factory
     await engine.dispose()
+
+
+def _run_task_delay_in_new_thread(monkeypatch, task):
+    """upload_market_data_csv/import_market_data_from_web call `.delay(...)`
+    synchronously from inside these awaited endpoint functions. Under
+    task_always_eager that runs the task body inline in the SAME thread, and
+    the task body calls asyncio.run() (see tasks.py) — which can't nest
+    inside the event loop already driving the test coroutine. So instead,
+    patch just the .delay() call site to hand off to a brand-new OS thread
+    with no running loop of its own — matching exactly how a real Celery
+    worker process invokes it (a separate process, never inside a live
+    asyncio loop) — while leaving everything else (the real task body, the
+    real asyncio.run(), the real execute_*_import()) untouched. This is
+    test-only scaffolding; routers/data.py itself is unmodified."""
+    original_delay = task.delay
+
+    def delay_in_new_thread(*args, **kwargs):
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+            return executor.submit(original_delay, *args, **kwargs).result()
+
+    monkeypatch.setattr(task, "delay", delay_in_new_thread)
 
 
 @pytest_asyncio.fixture
@@ -104,7 +135,8 @@ async def test_bulk_upsert_normalizes_column_names_and_keeps_adj_close(session_f
 # ---- POST /api/data/upload-csv ---------------------------------------------
 
 @pytest.mark.asyncio
-async def test_upload_market_data_csv_inserts_bars(session_factory, user):
+async def test_upload_market_data_csv_inserts_bars(session_factory, user, monkeypatch):
+    _run_task_delay_in_new_thread(monkeypatch, data_router.upload_csv_task)
     csv_bytes = (
         b"Date,Open,High,Low,Close,Volume\n"
         b"2024-01-02,185.5,186.0,184.75,185.9,1000000\n"
@@ -113,23 +145,41 @@ async def test_upload_market_data_csv_inserts_bars(session_factory, user):
     upload = UploadFile(file=io.BytesIO(csv_bytes), filename="aapl.csv")
 
     async with session_factory() as db:
-        result = await data_router.upload_market_data_csv(
+        response = await data_router.upload_market_data_csv(
             ticker="aapl", file=upload, db=db, current_user=user,
         )
-    assert result == {"ticker": "AAPL", "inserted": 2, "skipped": 0}
+        assert response["status"] == "pending"
+        job = await data_router.get_import_job(response["job_id"], db=db, current_user=user)
+
+    assert job["status"] == "success"
+    assert job["result"] == {"ticker": "AAPL", "inserted": 2, "skipped": 0}
 
 
 @pytest.mark.asyncio
-async def test_upload_market_data_csv_rejects_malformed_columns(session_factory, user):
+async def test_upload_market_data_csv_rejects_malformed_columns(session_factory, user, monkeypatch):
+    """Deviates from the task-8 brief, which claimed this test needs no
+    changes. In fact _split_bar_groups only validates required OHLCV
+    columns for the Stooq-shaped branch (see
+    services/data_import_service.py) — a plain header'd CSV with the wrong
+    columns parses fine synchronously and only fails column validation
+    inside _bulk_upsert_market_data, which (per this task's rewrite) now
+    runs inside the async task, not the endpoint. So a malformed plain CSV
+    is no longer an immediate 400 from the POST — it surfaces as job
+    status="failed" on the follow-up GET, same as the Alpha Vantage
+    failure-mode tests below."""
+    _run_task_delay_in_new_thread(monkeypatch, data_router.upload_csv_task)
     csv_bytes = b"Foo,Bar\n1,2\n"
     upload = UploadFile(file=io.BytesIO(csv_bytes), filename="bad.csv")
 
     async with session_factory() as db:
-        with pytest.raises(HTTPException) as exc_info:
-            await data_router.upload_market_data_csv(
-                ticker="aapl", file=upload, db=db, current_user=user,
-            )
-    assert exc_info.value.status_code == 400
+        response = await data_router.upload_market_data_csv(
+            ticker="aapl", file=upload, db=db, current_user=user,
+        )
+        assert response["status"] == "pending"
+        job = await data_router.get_import_job(response["job_id"], db=db, current_user=user)
+
+    assert job["status"] == "failed"
+    assert "missing required column" in job["error_message"]
 
 
 @pytest.mark.asyncio
@@ -171,7 +221,8 @@ async def test_bulk_upsert_parses_yyyymmdd_integer_dates(session_factory):
 # ---- Stooq-style headerless per-symbol .txt import --------------------------
 
 @pytest.mark.asyncio
-async def test_upload_market_data_csv_infers_ticker_from_stooq_txt(session_factory, user):
+async def test_upload_market_data_csv_infers_ticker_from_stooq_txt(session_factory, user, monkeypatch):
+    _run_task_delay_in_new_thread(monkeypatch, data_router.upload_csv_task)
     txt_bytes = (
         b"AAPL.US,D,20260604,000000,313.23,313.54,309.65,311.23,44869134,0\n"
         b"AAPL.US,D,20260605,000000,312.86,315.17,307.15,307.34,65310502,0\n"
@@ -179,10 +230,14 @@ async def test_upload_market_data_csv_infers_ticker_from_stooq_txt(session_facto
     upload = UploadFile(file=io.BytesIO(txt_bytes), filename="aapl.us.txt")
 
     async with session_factory() as db:
-        result = await data_router.upload_market_data_csv(
+        response = await data_router.upload_market_data_csv(
             ticker=None, file=upload, db=db, current_user=user,
         )
-    assert result == {"ticker": "AAPL", "inserted": 2, "skipped": 0}
+        assert response["status"] == "pending"
+        job = await data_router.get_import_job(response["job_id"], db=db, current_user=user)
+
+    assert job["status"] == "success"
+    assert job["result"] == {"ticker": "AAPL", "inserted": 2, "skipped": 0}
 
     async with session_factory() as db:
         rows = (await db.execute(select(MarketData).where(MarketData.ticker == "AAPL"))).scalars().all()
@@ -190,7 +245,8 @@ async def test_upload_market_data_csv_infers_ticker_from_stooq_txt(session_facto
 
 
 @pytest.mark.asyncio
-async def test_upload_market_data_csv_infers_ticker_from_stooq_header(session_factory, user):
+async def test_upload_market_data_csv_infers_ticker_from_stooq_header(session_factory, user, monkeypatch):
+    _run_task_delay_in_new_thread(monkeypatch, data_router.upload_csv_task)
     txt_bytes = (
         b"<TICKER>,<PER>,<DATE>,<TIME>,<OPEN>,<HIGH>,<LOW>,<CLOSE>,<VOL>,<OPENINT>\n"
         b"MSFT.US,D,20260604,000000,313.23,313.54,309.65,311.23,44869134,0\n"
@@ -198,14 +254,19 @@ async def test_upload_market_data_csv_infers_ticker_from_stooq_header(session_fa
     upload = UploadFile(file=io.BytesIO(txt_bytes), filename="msft.us.txt")
 
     async with session_factory() as db:
-        result = await data_router.upload_market_data_csv(
+        response = await data_router.upload_market_data_csv(
             ticker=None, file=upload, db=db, current_user=user,
         )
-    assert result == {"ticker": "MSFT", "inserted": 1, "skipped": 0}
+        assert response["status"] == "pending"
+        job = await data_router.get_import_job(response["job_id"], db=db, current_user=user)
+
+    assert job["status"] == "success"
+    assert job["result"] == {"ticker": "MSFT", "inserted": 1, "skipped": 0}
 
 
 @pytest.mark.asyncio
-async def test_upload_market_data_csv_splits_multiple_tickers_in_one_stooq_file(session_factory, user):
+async def test_upload_market_data_csv_splits_multiple_tickers_in_one_stooq_file(session_factory, user, monkeypatch):
+    _run_task_delay_in_new_thread(monkeypatch, data_router.upload_csv_task)
     txt_bytes = (
         b"AAPL.US,D,20260604,000000,313.23,313.54,309.65,311.23,44869134,0\n"
         b"MSFT.US,D,20260604,000000,450.0,451.0,448.0,449.5,30000000,0\n"
@@ -213,11 +274,15 @@ async def test_upload_market_data_csv_splits_multiple_tickers_in_one_stooq_file(
     upload = UploadFile(file=io.BytesIO(txt_bytes), filename="basket.txt")
 
     async with session_factory() as db:
-        result = await data_router.upload_market_data_csv(
+        response = await data_router.upload_market_data_csv(
             ticker=None, file=upload, db=db, current_user=user,
         )
-    assert {r["ticker"] for r in result} == {"AAPL", "MSFT"}
-    assert all(r["inserted"] == 1 for r in result)
+        assert response["status"] == "pending"
+        job = await data_router.get_import_job(response["job_id"], db=db, current_user=user)
+
+    assert job["status"] == "success"
+    assert {r["ticker"] for r in job["result"]} == {"AAPL", "MSFT"}
+    assert all(r["inserted"] == 1 for r in job["result"])
 
 
 # ---- POST /api/data/import/{ticker} (Alpha Vantage) ------------------------
@@ -233,6 +298,7 @@ class _FakeResponse:
 
 @pytest.mark.asyncio
 async def test_import_market_data_from_web_inserts_bars(session_factory, user, monkeypatch):
+    _run_task_delay_in_new_thread(monkeypatch, data_router.import_alpha_vantage_task)
     payload = {
         "Time Series (Daily)": {
             "2024-01-03": {"1. open": "186.0", "2. high": "187.0", "3. low": "185.5", "4. close": "186.5", "5. volume": "900000"},
@@ -242,7 +308,7 @@ async def test_import_market_data_from_web_inserts_bars(session_factory, user, m
 
     captured = {}
 
-    async def fake_get(self, url, params=None):
+    async def fake_get(self, url, params=None, **kwargs):
         captured["url"] = url
         captured["params"] = params
         return _FakeResponse(payload)
@@ -250,16 +316,21 @@ async def test_import_market_data_from_web_inserts_bars(session_factory, user, m
     monkeypatch.setattr(httpx.AsyncClient, "get", fake_get)
 
     async with session_factory() as db:
-        result = await data_router.import_market_data_from_web(
+        response = await data_router.import_market_data_from_web(
             "aapl", start_date=None, end_date=None, db=db, current_user=user,
         )
-    assert result == {"ticker": "AAPL", "inserted": 2, "skipped": 0}
+        assert response["status"] == "pending"
+        job = await data_router.get_import_job(response["job_id"], db=db, current_user=user)
+
+    assert job["status"] == "success"
+    assert job["result"] == {"ticker": "AAPL", "inserted": 2, "skipped": 0}
     assert captured["params"]["symbol"] == "aapl"
     assert captured["params"]["function"] == "TIME_SERIES_DAILY"
 
 
 @pytest.mark.asyncio
 async def test_import_market_data_from_web_filters_to_date_window(session_factory, user, monkeypatch):
+    _run_task_delay_in_new_thread(monkeypatch, data_router.import_alpha_vantage_task)
     payload = {
         "Time Series (Daily)": {
             "2024-01-01": {"1. open": "1", "2. high": "1", "3. low": "1", "4. close": "1", "5. volume": "1"},
@@ -268,66 +339,84 @@ async def test_import_market_data_from_web_filters_to_date_window(session_factor
         }
     }
 
-    async def fake_get(self, url, params=None):
+    async def fake_get(self, url, params=None, **kwargs):
         return _FakeResponse(payload)
 
     monkeypatch.setattr(httpx.AsyncClient, "get", fake_get)
 
     async with session_factory() as db:
-        result = await data_router.import_market_data_from_web(
+        response = await data_router.import_market_data_from_web(
             "aapl", start_date=datetime(2024, 1, 2), end_date=datetime(2024, 1, 2), db=db, current_user=user,
         )
-    assert result == {"ticker": "AAPL", "inserted": 1, "skipped": 0}
+        assert response["status"] == "pending"
+        job = await data_router.get_import_job(response["job_id"], db=db, current_user=user)
+
+    assert job["status"] == "success"
+    assert job["result"] == {"ticker": "AAPL", "inserted": 1, "skipped": 0}
 
 
 @pytest.mark.asyncio
 async def test_import_market_data_from_web_404s_on_invalid_symbol(session_factory, user, monkeypatch):
-    async def fake_get(self, url, params=None):
-        return _FakeResponse({"Error Message": "Invalid API call. Please retry or visit the documentation."})
+    _run_task_delay_in_new_thread(monkeypatch, data_router.import_alpha_vantage_task)
+    payload = {"Error Message": "Invalid API call. Please retry or visit the documentation."}
+
+    async def fake_get(self, url, params=None, **kwargs):
+        return _FakeResponse(payload)
 
     monkeypatch.setattr(httpx.AsyncClient, "get", fake_get)
 
     async with session_factory() as db:
-        with pytest.raises(HTTPException) as exc_info:
-            await data_router.import_market_data_from_web(
-                "NOTATICKER", start_date=None, end_date=None, db=db, current_user=user,
-            )
-    assert exc_info.value.status_code == 404
+        response = await data_router.import_market_data_from_web(
+            "NOTATICKER", start_date=None, end_date=None, db=db, current_user=user,
+        )
+        assert response["status"] == "pending"
+        job = await data_router.get_import_job(response["job_id"], db=db, current_user=user)
+
+    assert job["status"] == "failed"
+    assert "Invalid API call" in job["error_message"]
 
 
 @pytest.mark.asyncio
 async def test_import_market_data_from_web_400s_when_key_is_unset_or_limited(session_factory, user, monkeypatch):
     """Demo-key / rate-limit responses come back as 200 with an
     Information/Note field instead of Time Series data — surface that as a
-    400 with Alpha Vantage's own message, not a generic failure."""
-    async def fake_get(self, url, params=None):
+    failed job with Alpha Vantage's own message, not a generic failure."""
+    _run_task_delay_in_new_thread(monkeypatch, data_router.import_alpha_vantage_task)
+
+    async def fake_get(self, url, params=None, **kwargs):
         return _FakeResponse({"Information": "The **demo** API key is for demo purposes only."})
 
     monkeypatch.setattr(httpx.AsyncClient, "get", fake_get)
 
     async with session_factory() as db:
-        with pytest.raises(HTTPException) as exc_info:
-            await data_router.import_market_data_from_web(
-                "AAPL", start_date=None, end_date=None, db=db, current_user=user,
-            )
-    assert exc_info.value.status_code == 400
-    assert "demo" in exc_info.value.detail.lower()
+        response = await data_router.import_market_data_from_web(
+            "AAPL", start_date=None, end_date=None, db=db, current_user=user,
+        )
+        assert response["status"] == "pending"
+        job = await data_router.get_import_job(response["job_id"], db=db, current_user=user)
+
+    assert job["status"] == "failed"
+    assert "demo" in job["error_message"].lower()
 
 
 @pytest.mark.asyncio
 async def test_import_market_data_from_web_uses_explicit_api_key_over_env(session_factory, user, monkeypatch):
+    _run_task_delay_in_new_thread(monkeypatch, data_router.import_alpha_vantage_task)
     monkeypatch.setenv("ALPHA_VANTAGE_API_KEY", "env-key")
     captured = {}
 
-    async def fake_get(self, url, params=None):
+    async def fake_get(self, url, params=None, **kwargs):
         captured["params"] = params
         return _FakeResponse({"Error Message": "nope"})
 
     monkeypatch.setattr(httpx.AsyncClient, "get", fake_get)
 
     async with session_factory() as db:
-        with pytest.raises(HTTPException):
-            await data_router.import_market_data_from_web(
-                "AAPL", start_date=None, end_date=None, api_key="explicit-key", db=db, current_user=user,
-            )
+        response = await data_router.import_market_data_from_web(
+            "AAPL", start_date=None, end_date=None, api_key="explicit-key", db=db, current_user=user,
+        )
+        assert response["status"] == "pending"
+        job = await data_router.get_import_job(response["job_id"], db=db, current_user=user)
+
+    assert job["status"] == "failed"
     assert captured["params"]["apikey"] == "explicit-key"
