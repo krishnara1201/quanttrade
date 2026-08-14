@@ -182,7 +182,10 @@ export default function DataPage() {
 
       <div className="layout two-cols">
         <div className="card">
-          <h3>Import from the web</h3>
+          <div className="card-head">
+            <h3>Import from the web</h3>
+            <span className="chip">Daily bars only</span>
+          </div>
           <p className="muted">
             Fetches daily history from Alpha Vantage by ticker symbol. Needs a free API key
             (no card, under a minute to claim at{' '}
@@ -241,7 +244,10 @@ export default function DataPage() {
         </div>
 
         <div className="card">
-          <h3>Upload a CSV or TXT</h3>
+          <div className="card-head">
+            <h3>Upload a CSV or TXT</h3>
+            <span className="chip">Daily bars only</span>
+          </div>
           <p className="muted">
             For data you already have. Two shapes are supported: a CSV with a header row
             (Date, Open, High, Low, Close, Volume, Adj Close optional — e.g. a broker/Yahoo
@@ -249,6 +255,7 @@ export default function DataPage() {
             .txt export (<code>TICKER.US,D,YYYYMMDD,HHMMSS,Open,High,Low,Close,Volume,OpenInt</code>)
             — the ticker is read from the file itself, so it can be left blank, and a file
             covering more than one symbol is split and imported per-ticker automatically.
+            One row per trading day — intraday or sub-daily bars aren't supported.
           </p>
           <form className="stack" onSubmit={handleCsvUpload}>
             <label className="field">
@@ -298,7 +305,7 @@ export default function DataPage() {
                 <div>
                   <div className="title-row">
                     <span className="title">{t}</span>
-                    {details && <span className="chip">{details.count} bars</span>}
+                    {details && <span className="chip">{details.count} daily bars</span>}
                   </div>
                   {details && (
                     <p className="muted">

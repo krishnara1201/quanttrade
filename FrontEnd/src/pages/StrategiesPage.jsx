@@ -322,7 +322,7 @@ export default function StrategiesPage() {
                     {tickerRange && (
                       <span className="muted" style={{ fontSize: '0.8em' }}>
                         Data available {toDateInputValue(tickerRange.start_date)} to {toDateInputValue(tickerRange.end_date)}
-                        {' '}({tickerRange.count} bars)
+                        {' '}({tickerRange.count} daily bars)
                       </span>
                     )}
                   </label>
