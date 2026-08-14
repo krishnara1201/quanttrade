@@ -11,6 +11,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
 
 from database.models import Base, User, Project, Strategy, PortfolioBacktestResult
+from services.portfolio_backtest_service import normalize_weights
 
 
 @pytest_asyncio.fixture
@@ -62,3 +63,29 @@ async def test_portfolio_backtest_result_round_trips(session_factory):
         assert loaded.initial_capital == 10000.0
         assert loaded.commission_pct == 0.1
         assert loaded.per_ticker == {"AAPL": {"metrics": {}}}
+
+
+def test_normalize_weights_scales_to_sum_one():
+    result = normalize_weights([{"ticker": "AAPL", "weight": 2}, {"ticker": "MSFT", "weight": 1}])
+    assert result[0] == {"ticker": "AAPL", "weight": pytest.approx(2 / 3)}
+    assert result[1] == {"ticker": "MSFT", "weight": pytest.approx(1 / 3)}
+
+
+def test_normalize_weights_already_summing_to_one_is_unchanged():
+    result = normalize_weights([{"ticker": "AAPL", "weight": 0.5}, {"ticker": "MSFT", "weight": 0.5}])
+    assert result == [{"ticker": "AAPL", "weight": 0.5}, {"ticker": "MSFT", "weight": 0.5}]
+
+
+def test_normalize_weights_rejects_single_ticker():
+    with pytest.raises(ValueError, match="at least 2 tickers"):
+        normalize_weights([{"ticker": "AAPL", "weight": 1}])
+
+
+def test_normalize_weights_rejects_non_positive_weight():
+    with pytest.raises(ValueError, match="AAPL"):
+        normalize_weights([{"ticker": "AAPL", "weight": 0}, {"ticker": "MSFT", "weight": 1}])
+
+
+def test_normalize_weights_rejects_duplicate_ticker():
+    with pytest.raises(ValueError, match="Duplicate"):
+        normalize_weights([{"ticker": "AAPL", "weight": 1}, {"ticker": "AAPL", "weight": 1}])
