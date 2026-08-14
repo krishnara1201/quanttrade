@@ -19,6 +19,51 @@ def make_executor(parameters=None, entry="close > 0", exit="close < 0"):
     return StrategyExecutor(config)
 
 
+def test_open_and_close_position_helpers_match_original_long_math():
+    executor = make_executor()
+    trades = []
+
+    direction, qty, entry_price, entry_basis, cash = executor._open_position(
+        'long', close_price=100.0, cash=1000.0, commission_pct=1.0, slippage_pct=0.5,
+        timestamp='2024-01-01T00:00:00', trades=trades,
+    )
+    assert direction == 'long'
+    assert qty == 9
+    assert entry_price == pytest.approx(100.5, abs=1e-6)
+    assert entry_basis == pytest.approx(913.545, abs=1e-3)
+    assert cash == pytest.approx(86.455, abs=1e-3)
+    assert trades == [{
+        'type': 'entry', 'direction': 'long',
+        'price': pytest.approx(100.5, abs=1e-6), 'date': '2024-01-01T00:00:00', 'size': 9,
+    }]
+
+    direction, qty, entry_price, entry_basis, cash = executor._close_position(
+        direction, qty, entry_basis, close_price=110.0, cash=cash,
+        commission_pct=1.0, slippage_pct=0.5, timestamp='2024-01-02T00:00:00',
+        exit_reason='signal', trades=trades,
+    )
+    assert direction is None
+    assert qty == 0
+    assert cash == pytest.approx(1061.6545, abs=1e-3)
+    assert trades[1]['type'] == 'exit'
+    assert trades[1]['direction'] == 'long'
+    assert trades[1]['exit_reason'] == 'signal'
+    assert trades[1]['pnl'] == pytest.approx(61.6545, abs=1e-3)
+
+
+def test_open_position_returns_flat_when_cash_cannot_afford_one_share():
+    executor = make_executor()
+    trades = []
+    direction, qty, entry_price, entry_basis, cash = executor._open_position(
+        'long', close_price=1000.0, cash=500.0, commission_pct=1.0, slippage_pct=0.5,
+        timestamp='2024-01-01T00:00:00', trades=trades,
+    )
+    assert direction is None
+    assert qty == 0
+    assert cash == pytest.approx(500.0)
+    assert trades == []
+
+
 def test_sma_matches_pandas_rolling_mean():
     closes = [10, 11, 12, 13, 14, 15, 16, 17]
     df = make_price_df(closes)
