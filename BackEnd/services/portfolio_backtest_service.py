@@ -227,3 +227,54 @@ async def run_portfolio_backtest(
         "per_ticker": per_ticker_results,
         "created_at": record.created_at.isoformat(),
     }
+
+
+async def get_portfolio_backtest_results(strategy_id: int, db: AsyncSession, user: User) -> List[Dict[str, Any]]:
+    """Summary rows (no per_ticker payload) for all portfolio backtests of a strategy."""
+    strategy_result = await db.execute(
+        select(Strategy).options(selectinload(Strategy.project)).where(Strategy.id == strategy_id)
+    )
+    strategy = strategy_result.scalars().first()
+    if not strategy or strategy.project.owner_id != user.id:
+        raise ValueError("Unauthorized")
+
+    result = await db.execute(
+        select(PortfolioBacktestResult)
+        .where(PortfolioBacktestResult.strategy_id == strategy_id)
+        .order_by(PortfolioBacktestResult.created_at.desc())
+    )
+    records = result.scalars().all()
+    return [
+        {
+            "id": r.id,
+            "strategy_id": r.strategy_id,
+            "allocations": r.allocations,
+            "metrics": r.results,
+            "created_at": r.created_at.isoformat(),
+        }
+        for r in records
+    ]
+
+
+async def get_portfolio_backtest_detail(portfolio_backtest_id: int, db: AsyncSession, user: User) -> Dict[str, Any]:
+    """Full detail for one portfolio backtest, including the per_ticker breakdown."""
+    result = await db.execute(
+        select(PortfolioBacktestResult)
+        .options(selectinload(PortfolioBacktestResult.strategy).selectinload(Strategy.project))
+        .where(PortfolioBacktestResult.id == portfolio_backtest_id)
+    )
+    record = result.scalars().first()
+    if not record:
+        raise ValueError("Portfolio backtest not found")
+    if record.strategy.project.owner_id != user.id:
+        raise ValueError("Unauthorized")
+
+    return {
+        "id": record.id,
+        "strategy_id": record.strategy_id,
+        "allocations": record.allocations,
+        "metrics": record.results,
+        "equity_curve": record.equity_curve,
+        "per_ticker": record.per_ticker,
+        "created_at": record.created_at.isoformat(),
+    }

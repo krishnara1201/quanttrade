@@ -308,3 +308,46 @@ async def test_run_portfolio_backtest_does_not_raise_missing_greenlet_on_unautho
                 10000.0, 0.1, 0.05,
                 db, bob,
             )
+
+
+@pytest.mark.asyncio
+async def test_get_portfolio_backtest_results_does_not_raise_missing_greenlet(session_factory, portfolio_seeded):
+    async with session_factory() as db:
+        user = await _reload_user(session_factory, portfolio_seeded["user_id"])
+        await portfolio_backtest_service.run_portfolio_backtest(
+            portfolio_seeded["strategy_id"],
+            [{"ticker": "AAPL", "weight": 1}, {"ticker": "MSFT", "weight": 1}],
+            "2024-01-01", "2024-01-05",
+            10000.0, 0.1, 0.05,
+            db, user,
+        )
+
+    async with session_factory() as db:
+        user = await _reload_user(session_factory, portfolio_seeded["user_id"])
+        results = await portfolio_backtest_service.get_portfolio_backtest_results(
+            portfolio_seeded["strategy_id"], db, user,
+        )
+    assert len(results) == 1
+    assert results[0]["strategy_id"] == portfolio_seeded["strategy_id"]
+    assert results[0]["allocations"][0]["ticker"] == "AAPL"
+
+
+@pytest.mark.asyncio
+async def test_get_portfolio_backtest_detail_does_not_raise_missing_greenlet(session_factory, portfolio_seeded):
+    async with session_factory() as db:
+        user = await _reload_user(session_factory, portfolio_seeded["user_id"])
+        created = await portfolio_backtest_service.run_portfolio_backtest(
+            portfolio_seeded["strategy_id"],
+            [{"ticker": "AAPL", "weight": 1}, {"ticker": "MSFT", "weight": 1}],
+            "2024-01-01", "2024-01-05",
+            10000.0, 0.1, 0.05,
+            db, user,
+        )
+
+    async with session_factory() as db:
+        user = await _reload_user(session_factory, portfolio_seeded["user_id"])
+        detail = await portfolio_backtest_service.get_portfolio_backtest_detail(
+            created["id"], db, user,
+        )
+    assert detail["id"] == created["id"]
+    assert set(detail["per_ticker"].keys()) == {"AAPL", "MSFT"}
