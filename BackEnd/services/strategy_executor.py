@@ -269,8 +269,8 @@ class StrategyExecutor:
     def _calculate_metrics(self, df: pd.DataFrame, trades: List[Dict],
                             initial_capital: float, equity_curve: List[Dict]) -> Dict[str, Any]:
         """Calculate performance metrics"""
-        max_drawdown_pct = self._max_drawdown_pct(equity_curve)
-        sharpe_ratio = self._sharpe_ratio(equity_curve)
+        max_dd = max_drawdown_pct(equity_curve)
+        sharpe = sharpe_ratio(equity_curve)
 
         if not trades:
             return {
@@ -278,8 +278,8 @@ class StrategyExecutor:
                 'return_pct': 0.0,
                 'win_rate': 0.0,
                 'num_trades': 0,
-                'max_drawdown_pct': max_drawdown_pct,
-                'sharpe_ratio': sharpe_ratio,
+                'max_drawdown_pct': max_dd,
+                'sharpe_ratio': sharpe,
             }
 
         total_pnl = sum(t.get('pnl', 0) for t in trades if t['type'] == 'exit')
@@ -301,29 +301,31 @@ class StrategyExecutor:
             'win_rate': float(win_rate),
             'num_trades': len(exits),
             'final_capital': float(final_capital),
-            'max_drawdown_pct': max_drawdown_pct,
-            'sharpe_ratio': sharpe_ratio,
+            'max_drawdown_pct': max_dd,
+            'sharpe_ratio': sharpe,
         }
 
-    def _max_drawdown_pct(self, equity_curve: List[Dict]) -> float:
-        if not equity_curve:
-            return 0.0
-        peak = equity_curve[0]['equity']
-        max_dd = 0.0
-        for point in equity_curve:
-            equity = point['equity']
-            peak = max(peak, equity)
-            if peak > 0:
-                drawdown = (peak - equity) / peak * 100
-                max_dd = max(max_dd, drawdown)
-        return float(max_dd)
 
-    def _sharpe_ratio(self, equity_curve: List[Dict]) -> float:
-        if len(equity_curve) < 2:
-            return 0.0
-        values = pd.Series([p['equity'] for p in equity_curve])
-        returns = values.pct_change().dropna()
-        std = returns.std()
-        if not std or pd.isna(std) or std == 0:
-            return 0.0
-        return float((returns.mean() / std) * (252 ** 0.5))
+def max_drawdown_pct(equity_curve: List[Dict]) -> float:
+    if not equity_curve:
+        return 0.0
+    peak = equity_curve[0]['equity']
+    max_dd = 0.0
+    for point in equity_curve:
+        equity = point['equity']
+        peak = max(peak, equity)
+        if peak > 0:
+            drawdown = (peak - equity) / peak * 100
+            max_dd = max(max_dd, drawdown)
+    return float(max_dd)
+
+
+def sharpe_ratio(equity_curve: List[Dict]) -> float:
+    if len(equity_curve) < 2:
+        return 0.0
+    values = pd.Series([p['equity'] for p in equity_curve])
+    returns = values.pct_change().dropna()
+    std = returns.std()
+    if not std or pd.isna(std) or std == 0:
+        return 0.0
+    return float((returns.mean() / std) * (252 ** 0.5))
