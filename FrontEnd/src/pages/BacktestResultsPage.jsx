@@ -12,8 +12,8 @@ export default function BacktestResultsPage() {
   const [detailLoading, setDetailLoading] = useState(false);
   const [expandedTicker, setExpandedTicker] = useState(null);
 
-  const loadResults = async () => {
-    setLoading(true);
+  const loadResults = async ({ preserveSelection = false } = {}) => {
+    if (!preserveSelection) setLoading(true);
     setError('');
     try {
       const [singleResults, portfolioResults] = await Promise.all([
@@ -25,13 +25,22 @@ export default function BacktestResultsPage() {
         ...(portfolioResults || []).map((r) => ({ ...r, _type: 'portfolio' })),
       ].sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
       setResults(merged);
-      if (merged.length > 0) {
+      if (!preserveSelection && merged.length > 0) {
         loadDetail(merged[0]);
+      } else if (preserveSelection) {
+        setSelectedResult((prev) => {
+          if (!prev) return prev;
+          const updated = merged.find((r) => r.id === prev.id && r._type === prev._type);
+          if (updated && updated.status !== prev.status && (updated.status === 'success' || updated.status === 'failed')) {
+            loadDetail(updated);
+          }
+          return prev;
+        });
       }
     } catch (err) {
       setError(err?.response?.data?.detail || 'Failed to load backtest results');
     } finally {
-      setLoading(false);
+      if (!preserveSelection) setLoading(false);
     }
   };
 
@@ -53,6 +62,15 @@ export default function BacktestResultsPage() {
   useEffect(() => {
     loadResults();
   }, [strategyId]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    const active = results.some((r) => r.status === 'pending' || r.status === 'running');
+    if (!active) return undefined;
+    const timer = setInterval(() => {
+      loadResults({ preserveSelection: true });
+    }, 2500);
+    return () => clearInterval(timer);
+  }, [results, strategyId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
     <div className="page">
@@ -87,6 +105,9 @@ export default function BacktestResultsPage() {
                     ) : (
                       <span className="chip">{result.num_trades} trades</span>
                     )}
+                    {result.status && result.status !== 'success' && (
+                      <span className="chip">{result.status}</span>
+                    )}
                   </div>
                   <p className="muted">{result.created_at}</p>
                 </div>
@@ -101,6 +122,16 @@ export default function BacktestResultsPage() {
           {selectedResult && (
             <>
               <h3>Performance Metrics</h3>
+              {selectedResult.status && selectedResult.status !== 'success' && (
+                <div
+                  className={selectedResult.status === 'failed' ? 'error-box' : 'muted'}
+                  style={{ marginBottom: '12px' }}
+                >
+                  {selectedResult.status === 'failed'
+                    ? `Backtest failed: ${selectedResult.error_message || 'Unknown error'}`
+                    : `Backtest ${selectedResult.status}…`}
+                </div>
+              )}
               <div className="metrics-grid">
                 <div className="metric">
                   <span className="label">Total Return</span>
