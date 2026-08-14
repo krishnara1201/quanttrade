@@ -13,20 +13,25 @@ export default function BacktestChart({ data, trades, equityCurve, priceName = '
     return <p className="muted">No data to display</p>;
   }
 
-  const tradesByDate = new Map();
+  const entryByDate = new Map();
+  const exitByDate = new Map();
   (trades || []).forEach((t) => {
-    tradesByDate.set(t.date, t);
+    if (t.type === 'entry') entryByDate.set(t.date, t);
+    else if (t.type === 'exit') exitByDate.set(t.date, t);
   });
 
   const chartData = data.map((d) => {
-    const trade = tradesByDate.get(d.date);
-    const entry = trade && trade.type === 'entry' ? trade : null;
-    const exit = trade && trade.type === 'exit' ? trade : null;
+    const entry = entryByDate.get(d.date) || null;
+    const exit = exitByDate.get(d.date) || null;
+    const isShortEntry = entry && entry.direction === 'short';
+    const isShortExit = exit && exit.direction === 'short';
     return {
       date: d.date,
       close: d.close,
-      entry: entry ? entry.price : null,
-      exit: exit ? exit.price : null,
+      longEntry: entry && !isShortEntry ? entry.price : null,
+      shortEntry: isShortEntry ? entry.price : null,
+      longExit: exit && !isShortExit ? exit.price : null,
+      shortExit: isShortExit ? exit.price : null,
       pnl: exit ? exit.pnl : null,
     };
   });
@@ -69,19 +74,37 @@ export default function BacktestChart({ data, trades, equityCurve, priceName = '
 
           <Scatter
             yAxisId="left"
-            dataKey="entry"
+            dataKey="longEntry"
             fill="#7cf2d4"
-            name="Entry (Buy)"
+            name="Long Entry"
             shape="triangle"
             isAnimationActive={false}
           />
 
           <Scatter
             yAxisId="left"
-            dataKey="exit"
+            dataKey="shortEntry"
+            fill="#ffb86c"
+            name="Short Entry"
+            shape="wye"
+            isAnimationActive={false}
+          />
+
+          <Scatter
+            yAxisId="left"
+            dataKey="longExit"
             fill="#ff6b6b"
-            name="Exit (Sell)"
+            name="Long Exit"
             shape="diamond"
+            isAnimationActive={false}
+          />
+
+          <Scatter
+            yAxisId="left"
+            dataKey="shortExit"
+            fill="#ff4da6"
+            name="Short Exit"
+            shape="square"
             isAnimationActive={false}
           />
         </ComposedChart>
