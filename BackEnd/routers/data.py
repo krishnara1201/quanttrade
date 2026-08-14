@@ -3,8 +3,6 @@ import os
 from datetime import datetime
 from typing import Optional
 
-import httpx
-import pandas as pd
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from pydantic import BaseModel
 from sqlalchemy import func, select
@@ -12,10 +10,15 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from database.models import User, Project, Strategy, MarketData, DataImportJob
 from database.connection import AsyncSessionLocal, get_db
 from services.auth_service import get_current_user
-from services.data_import_service import ALPHA_VANTAGE_URL, _split_bar_groups
+from services.data_import_service import _split_bar_groups
 from tasks import import_alpha_vantage_task, upload_csv_task
 
 router = APIRouter(prefix="/api/data", tags=["data"])
+
+# Redis's default proto-max-bulk-len is 512MB, and upload-csv base64-encodes
+# the whole file into a single Celery task argument — cap well under that so
+# an oversized upload 413s cleanly instead of degrading/crashing the broker.
+MAX_UPLOAD_BYTES = 50 * 1024 * 1024
 
 
 class MarketDataCreate(BaseModel):
@@ -67,6 +70,8 @@ async def upload_market_data_csv(
     or a missing required ticker still 400s immediately), then hands the
     actual bulk insert to a Celery task — see GET /jobs/{job_id} to poll."""
     content = await file.read()
+    if len(content) > MAX_UPLOAD_BYTES:
+        raise HTTPException(status_code=413, detail="File too large")
     ticker = ticker.strip().upper() if ticker else None
 
     try:
@@ -84,7 +89,13 @@ async def upload_market_data_csv(
     await db.commit()
     await db.refresh(job)
 
-    upload_csv_task.delay(job.id, ticker, base64.b64encode(content).decode("ascii"))
+    try:
+        upload_csv_task.delay(job.id, ticker, base64.b64encode(content).decode("ascii"))
+    except Exception as e:
+        job.status = "failed"
+        job.error_message = f"Could not enqueue task: {e}"
+        await db.commit()
+        raise HTTPException(status_code=503, detail="Task queue unavailable, please try again")
     return {"job_id": job.id, "status": job.status}
 
 @router.post("/import/{ticker}")
@@ -114,11 +125,17 @@ async def import_market_data_from_web(
     await db.commit()
     await db.refresh(job)
 
-    import_alpha_vantage_task.delay(
-        job.id, ticker, key, outputsize,
-        start_date.isoformat() if start_date else None,
-        end_date.isoformat() if end_date else None,
-    )
+    try:
+        import_alpha_vantage_task.delay(
+            job.id, ticker, key, outputsize,
+            start_date.isoformat() if start_date else None,
+            end_date.isoformat() if end_date else None,
+        )
+    except Exception as e:
+        job.status = "failed"
+        job.error_message = f"Could not enqueue task: {e}"
+        await db.commit()
+        raise HTTPException(status_code=503, detail="Task queue unavailable, please try again")
     return {"job_id": job.id, "status": job.status}
 
 @router.get("/jobs/{job_id}")

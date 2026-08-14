@@ -35,7 +35,7 @@ The `.gitignore` is already configured, but verify:
 
 ## 🐳 Docker Setup (Recommended)
 
-Run the full stack — Postgres, backend, and frontend — with Docker Compose. No local Python, Node, or Postgres install needed.
+Run the full stack — Postgres, Redis, backend, worker, and frontend — with Docker Compose. No local Python, Node, Postgres, or Redis install needed.
 
 ```bash
 cp BackEnd/.env.example BackEnd/.env
@@ -46,8 +46,12 @@ docker compose up
 - Backend: http://localhost:8000
 - Frontend: http://localhost:5173
 - Postgres: localhost:5432 (user/password/db: `postgres`/`postgres`/`quanttrade`)
+- Redis: broker for the `worker` service (Celery), not exposed on a host port
+- `worker`: Celery worker process that runs backtests and market-data imports asynchronously (see CLAUDE.md's "Async task execution" section) — has no HTTP port of its own
 
-Both backend and frontend run in dev mode with hot reload — edits to files under `BackEnd/` or `FrontEnd/` are picked up automatically. (On Docker Desktop for macOS/Windows, file-change detection across the VM boundary can be unreliable — if hot reload doesn't trigger, set `WATCHFILES_FORCE_POLLING=true` for the backend and enable `server.watch.usePolling` in `FrontEnd/vite.config.js` for the frontend.)
+The `backend` and `frontend` services run in dev mode with hot reload — edits to files under `BackEnd/` or `FrontEnd/` are picked up automatically. (On Docker Desktop for macOS/Windows, file-change detection across the VM boundary can be unreliable — if hot reload doesn't trigger, set `WATCHFILES_FORCE_POLLING=true` for the backend and enable `server.watch.usePolling` in `FrontEnd/vite.config.js` for the frontend.) **The `worker` service does NOT hot-reload** despite the same `./BackEnd:/app` bind mount — Celery has no autoreload wired up here, so editing backend code restarts `uvicorn` automatically but the worker keeps running stale code until you `docker compose restart worker`.
+
+This branch adds new columns to `BacktestResult`/`PortfolioBacktestResult` and a new `DataImportJob` table. There's no migration tooling (see CLAUDE.md), so an existing local Postgres volume from before this branch needs `docker compose down -v` (or the tables dropped manually) before `docker compose up` will work against it.
 
 Postgres data persists in a named Docker volume across restarts. To stop the stack and keep data: `docker compose down`. To also remove the Postgres volume (deletes all data): `docker compose down -v`.
 

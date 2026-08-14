@@ -20,7 +20,7 @@ from fastapi import HTTPException, UploadFile
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
 
-from database.models import Base, User, MarketData
+from database.models import Base, User, MarketData, DataImportJob
 from routers import data as data_router
 from services import data_import_service
 
@@ -180,6 +180,25 @@ async def test_upload_market_data_csv_rejects_malformed_columns(session_factory,
 
     assert job["status"] == "failed"
     assert "missing required column" in job["error_message"]
+
+
+@pytest.mark.asyncio
+async def test_upload_market_data_csv_rejects_oversized_file(session_factory, user, monkeypatch):
+    """upload-csv base64-encodes the whole file into a single Celery task
+    argument passed through Redis. Without a size cap, a large-enough upload
+    could degrade/crash the broker (Redis's default proto-max-bulk-len is
+    512MB) rather than failing cleanly with a 4xx. Shrink the module's limit
+    for the test so we don't need to actually build a 50MB+ file."""
+    monkeypatch.setattr(data_router, "MAX_UPLOAD_BYTES", 10)
+    csv_bytes = b"Date,Open,High,Low,Close,Volume\n2024-01-02,1,2,0.5,1.5,100\n"
+    upload = UploadFile(file=io.BytesIO(csv_bytes), filename="aapl.csv")
+
+    async with session_factory() as db:
+        with pytest.raises(HTTPException) as exc_info:
+            await data_router.upload_market_data_csv(
+                ticker="aapl", file=upload, db=db, current_user=user,
+            )
+    assert exc_info.value.status_code == 413
 
 
 @pytest.mark.asyncio
@@ -397,6 +416,101 @@ async def test_import_market_data_from_web_400s_when_key_is_unset_or_limited(ses
 
     assert job["status"] == "failed"
     assert "demo" in job["error_message"].lower()
+
+
+# ---- "Never raises" contract: non-ValueError failures still fail the job --
+
+@pytest.mark.asyncio
+async def test_execute_csv_import_marks_job_failed_on_non_value_error(session_factory, user, monkeypatch):
+    """execute_csv_import's docstring promises 'Never raises — failure is
+    recorded on the job row', matching execute_backtest/execute_portfolio_backtest.
+    Before this fix it only caught ValueError around _split_bar_groups/
+    _bulk_upsert_market_data, so a non-ValueError (e.g. a DB-level error, or
+    any other bug) would propagate out of the Celery task uncaught and leave
+    the job stuck at status='running' forever. Force a plain RuntimeError and
+    assert it's recorded as a failed job instead."""
+    async with session_factory() as db:
+        job = DataImportJob(user_id=user.id, source="csv", ticker="AAPL", status="pending")
+        db.add(job)
+        await db.commit()
+        await db.refresh(job)
+        job_id = job.id
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(data_import_service, "_split_bar_groups", boom)
+
+    csv_bytes = b"Date,Open,High,Low,Close,Volume\n2024-01-02,1,2,0.5,1.5,100\n"
+    async with session_factory() as db:
+        await data_import_service.execute_csv_import(job_id, "AAPL", csv_bytes, db)
+
+    async with session_factory() as db:
+        result = await db.execute(select(DataImportJob).where(DataImportJob.id == job_id))
+        job = result.scalars().first()
+
+    assert job.status == "failed"
+    assert "RuntimeError" in job.error_message
+    assert "boom" in job.error_message
+
+
+@pytest.mark.asyncio
+async def test_execute_alpha_vantage_import_marks_job_failed_on_non_retryable_http_error(
+    session_factory, user, monkeypatch
+):
+    """Only httpx.ConnectError/httpx.TimeoutException should propagate
+    uncaught from execute_alpha_vantage_import — tasks.py's
+    import_alpha_vantage_task catches exactly those two to drive its retry
+    logic. Every other httpx.HTTPError subtype (e.g. RemoteProtocolError,
+    ReadError) is not retried and must be recorded on the job directly, to
+    satisfy the same 'never raises' contract as execute_csv_import."""
+    async with session_factory() as db:
+        job = DataImportJob(user_id=user.id, source="alpha_vantage", ticker="AAPL", status="pending")
+        db.add(job)
+        await db.commit()
+        await db.refresh(job)
+        job_id = job.id
+
+    async def fake_get(self, url, params=None, **kwargs):
+        raise httpx.RemoteProtocolError("peer closed connection")
+
+    monkeypatch.setattr(httpx.AsyncClient, "get", fake_get)
+
+    async with session_factory() as db:
+        await data_import_service.execute_alpha_vantage_import(
+            job_id, "AAPL", "demo", "compact", None, None, db
+        )
+
+    async with session_factory() as db:
+        result = await db.execute(select(DataImportJob).where(DataImportJob.id == job_id))
+        job = result.scalars().first()
+
+    assert job.status == "failed"
+    assert "RemoteProtocolError" in job.error_message
+
+
+@pytest.mark.asyncio
+async def test_execute_alpha_vantage_import_lets_connect_error_propagate(session_factory, user, monkeypatch):
+    """ConnectError/TimeoutException must NOT be swallowed here — they need
+    to reach tasks.py's import_alpha_vantage_task uncaught so its retry
+    logic (see tests/test_celery_tasks.py) can catch them."""
+    async with session_factory() as db:
+        job = DataImportJob(user_id=user.id, source="alpha_vantage", ticker="AAPL", status="pending")
+        db.add(job)
+        await db.commit()
+        await db.refresh(job)
+        job_id = job.id
+
+    async def fake_get(self, url, params=None, **kwargs):
+        raise httpx.ConnectError("connection refused")
+
+    monkeypatch.setattr(httpx.AsyncClient, "get", fake_get)
+
+    async with session_factory() as db:
+        with pytest.raises(httpx.ConnectError):
+            await data_import_service.execute_alpha_vantage_import(
+                job_id, "AAPL", "demo", "compact", None, None, db
+            )
 
 
 @pytest.mark.asyncio

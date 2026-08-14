@@ -12,7 +12,6 @@ import base64
 from typing import Optional
 
 import httpx
-from celery.exceptions import MaxRetriesExceededError
 
 from celery_app import celery_app
 from worker_db import get_worker_session_factory
@@ -43,7 +42,7 @@ def upload_csv_task(job_id: int, ticker: Optional[str], content_b64: str) -> Non
     asyncio.run(_run_with_session(execute_csv_import, job_id, ticker, content))
 
 
-@celery_app.task(bind=True, name="tasks.import_alpha_vantage_task", max_retries=2, default_retry_delay=5)
+@celery_app.task(bind=True, name="tasks.import_alpha_vantage_task", max_retries=1, default_retry_delay=5)
 def import_alpha_vantage_task(
     self, job_id: int, ticker: str, api_key: str, outputsize: str,
     start_date: Optional[str], end_date: Optional[str],
@@ -54,9 +53,16 @@ def import_alpha_vantage_task(
             execute_alpha_vantage_import, job_id, ticker, api_key, outputsize, start_date, end_date
         ))
     except (httpx.ConnectError, httpx.TimeoutException) as exc:
-        try:
-            raise self.retry(exc=exc)
-        except MaxRetriesExceededError:
+        # Task.retry(exc=...) re-raises the ORIGINAL exception once retries
+        # are exhausted — it does NOT raise MaxRetriesExceededError when
+        # exc= is passed (verified empirically against this project's
+        # installed Celery version). So we must check the retry count
+        # ourselves before deciding whether to retry or give up, rather
+        # than relying on catching MaxRetriesExceededError around
+        # self.retry() (that branch is unreachable dead code).
+        if self.request.retries >= self.max_retries:
             asyncio.run(_run_with_session(
                 _mark_job_failed, job_id, f"Could not reach data provider after retries: {exc}"
             ))
+            return
+        raise self.retry(exc=exc)

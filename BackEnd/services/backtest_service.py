@@ -107,8 +107,9 @@ async def execute_backtest(backtest_result_id: int, db: AsyncSession) -> None:
             commission_pct=record.commission_pct, slippage_pct=record.slippage_pct,
         )
     except Exception as e:
+        await db.rollback()
         record.status = "failed"
-        record.error_message = str(e)
+        record.error_message = f"{type(e).__name__}: {e}"
         await db.commit()
         return
 

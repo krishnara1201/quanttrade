@@ -50,7 +50,13 @@ async def run_backtest_endpoint(
         req.initial_capital, req.commission_pct, req.slippage_pct,
         db, user,
     )
-    run_backtest_task.delay(record.id)
+    try:
+        run_backtest_task.delay(record.id)
+    except Exception as e:
+        record.status = "failed"
+        record.error_message = f"Could not enqueue task: {e}"
+        await db.commit()
+        raise HTTPException(status_code=503, detail="Task queue unavailable, please try again")
     return {
         'id': record.id,
         'strategy_id': record.strategy_id,
@@ -123,7 +129,13 @@ async def run_portfolio_backtest_endpoint(
         status_code = 403 if str(e) == "Unauthorized" else (404 if "not found" in str(e) else 400)
         raise HTTPException(status_code=status_code, detail=str(e))
 
-    run_portfolio_backtest_task.delay(record.id)
+    try:
+        run_portfolio_backtest_task.delay(record.id)
+    except Exception as e:
+        record.status = "failed"
+        record.error_message = f"Could not enqueue task: {e}"
+        await db.commit()
+        raise HTTPException(status_code=503, detail="Task queue unavailable, please try again")
     return {
         "id": record.id,
         "strategy_id": record.strategy_id,

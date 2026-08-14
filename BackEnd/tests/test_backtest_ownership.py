@@ -178,3 +178,41 @@ async def test_get_backtest_detail_does_not_raise_missing_greenlet(session_facto
             seeded["backtest_id"], db=db, user=user,
         )
     assert detail["id"] == seeded["backtest_id"]
+
+
+@pytest.mark.asyncio
+async def test_run_backtest_endpoint_marks_row_failed_when_delay_raises(session_factory, seeded, monkeypatch):
+    """The BacktestResult row is already committed as 'pending' before
+    run_backtest_task.delay(...) is called. If the broker (Redis) is
+    unreachable at that moment, .delay() raises — without this fix that
+    would propagate as an unhandled exception (-> generic 500) and leave the
+    already-committed row stuck at status='pending' forever, with nothing
+    ever picking it up. Simulate a broker outage by making .delay() raise,
+    and assert the row is marked failed with a message and the endpoint
+    raises a 503 instead of an opaque 500."""
+    from fastapi import HTTPException
+    from routers.backtest import BacktestRequest, run_backtest_task
+
+    def broken_delay(*args, **kwargs):
+        raise ConnectionError("could not connect to redis")
+
+    monkeypatch.setattr(run_backtest_task, "delay", broken_delay)
+
+    async with session_factory() as db:
+        user = await _reload_user(session_factory, seeded["user_id"])
+        req = BacktestRequest(
+            strategy_id=seeded["strategy_id"], ticker="TEST",
+            start_date="2024-01-01", end_date="2024-01-06",
+        )
+        with pytest.raises(HTTPException) as exc_info:
+            await backtest_router.run_backtest_endpoint(req, db=db, user=user)
+        assert exc_info.value.status_code == 503
+
+        result = await db.execute(
+            select(BacktestResult).where(BacktestResult.strategy_id == seeded["strategy_id"])
+        )
+        records = result.scalars().all()
+        newest = max(records, key=lambda r: r.id)
+
+    assert newest.status == "failed"
+    assert "Could not enqueue" in newest.error_message

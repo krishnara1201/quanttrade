@@ -142,9 +142,10 @@ async def execute_csv_import(job_id: int, ticker: Optional[str], content: bytes,
         results = []
         for group_ticker, group_df in groups:
             results.append(await _bulk_upsert_market_data(group_ticker.upper(), group_df, db))
-    except ValueError as e:
+    except Exception as e:
+        await db.rollback()
         job.status = "failed"
-        job.error_message = str(e)
+        job.error_message = f"{type(e).__name__}: {e}"
         await db.commit()
         return
 
@@ -175,8 +176,21 @@ async def execute_alpha_vantage_import(
         "outputsize": outputsize,
         "apikey": api_key,
     }
-    async with httpx.AsyncClient(timeout=30.0) as http_client:
-        response = await http_client.get(ALPHA_VANTAGE_URL, params=params)
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as http_client:
+            response = await http_client.get(ALPHA_VANTAGE_URL, params=params)
+    except (httpx.ConnectError, httpx.TimeoutException):
+        # Let these propagate uncaught — tasks.py's import_alpha_vantage_task
+        # catches them specifically to retry. Every other httpx.HTTPError
+        # subtype (RemoteProtocolError, ReadError, etc.) is not retried and
+        # is recorded on the job directly, below.
+        raise
+    except Exception as e:
+        await db.rollback()
+        job.status = "failed"
+        job.error_message = f"{type(e).__name__}: {e}"
+        await db.commit()
+        return
 
     try:
         payload = response.json()

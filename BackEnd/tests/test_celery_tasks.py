@@ -79,3 +79,69 @@ async def test_run_backtest_task_marks_row_success(session_factory, seeded):
 
     assert record.status == "success"
     assert record.results["num_trades"] >= 0
+
+
+@pytest_asyncio.fixture
+async def import_job(session_factory):
+    async with session_factory() as db:
+        user = User(name="Ada", email="ada@example.com", password_hash="x")
+        db.add(user)
+        await db.flush()
+        job = DataImportJob(user_id=user.id, source="alpha_vantage", ticker="AAPL", status="pending")
+        db.add(job)
+        await db.commit()
+        await db.refresh(job)
+        return job.id
+
+
+@pytest.mark.asyncio
+async def test_import_alpha_vantage_task_marks_job_failed_after_retries_exhausted(
+    session_factory, import_job, monkeypatch
+):
+    """Regression test for the dead retry-exhaustion branch: Task.retry(exc=...)
+    re-raises the ORIGINAL exception once retries are exhausted rather than
+    raising MaxRetriesExceededError, so import_alpha_vantage_task must check
+    self.request.retries itself (see tasks.py).
+
+    Under task_always_eager, self.retry() does NOT actually loop and
+    re-invoke the task body — it raises celery.exceptions.Retry immediately
+    (eager mode has no broker to redeliver the message), which is exactly
+    what a real worker's first attempt (retries=0) does before the broker
+    redelivers with an incremented retries count. So this test drives the
+    two attempts a real worker would make explicitly via Task.apply(...,
+    retries=N), which Celery accepts precisely to let a caller set
+    self.request.retries: retries=0 (the initial attempt, max_retries=1)
+    must retry; retries=1 (the redelivered final attempt) must exhaust and
+    mark the job failed, never leaving it stuck at status='running'."""
+    import httpx
+    from celery.exceptions import Retry
+    from tasks import import_alpha_vantage_task
+
+    async def fake_get(self, url, params=None, **kwargs):
+        raise httpx.ConnectError("connection refused")
+
+    monkeypatch.setattr(httpx.AsyncClient, "get", fake_get)
+    args = (import_job, "AAPL", "demo", "compact", None, None)
+
+    # Attempt 1 (retries=0 < max_retries=1): must retry, not fail the job.
+    def first_attempt():
+        with pytest.raises(Retry):
+            import_alpha_vantage_task.apply(args=args, retries=0, throw=True)
+    await asyncio.to_thread(first_attempt)
+
+    async with session_factory() as db:
+        from sqlalchemy import select
+        result = await db.execute(select(DataImportJob).where(DataImportJob.id == import_job))
+        job = result.scalars().first()
+    assert job.status == "running"
+
+    # Attempt 2 (retries=1 >= max_retries=1): retries exhausted, must mark failed.
+    await asyncio.to_thread(import_alpha_vantage_task.apply, args, {}, None, retries=1, throw=True)
+
+    async with session_factory() as db:
+        from sqlalchemy import select
+        result = await db.execute(select(DataImportJob).where(DataImportJob.id == import_job))
+        job = result.scalars().first()
+
+    assert job.status == "failed"
+    assert "after retries" in job.error_message

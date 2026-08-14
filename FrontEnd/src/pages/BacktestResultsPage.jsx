@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { useParams } from 'react-router-dom';
 import BacktestChart from '../components/BacktestChart.jsx';
 import * as backtestApi from '../api/backtest.js';
@@ -11,6 +11,15 @@ export default function BacktestResultsPage() {
   const [selectedResult, setSelectedResult] = useState(null);
   const [detailLoading, setDetailLoading] = useState(false);
   const [expandedTicker, setExpandedTicker] = useState(null);
+
+  // loadResults isn't memoized, so its closure over `selectedResult` can be
+  // stale by the time a setInterval tick fires it (see the effect below) —
+  // a ref always reflects the latest selection regardless of which render's
+  // closure is currently running.
+  const selectedResultRef = useRef(null);
+  useEffect(() => {
+    selectedResultRef.current = selectedResult;
+  }, [selectedResult]);
 
   const loadResults = async ({ preserveSelection = false } = {}) => {
     if (!preserveSelection) setLoading(true);
@@ -27,15 +36,12 @@ export default function BacktestResultsPage() {
       setResults(merged);
       if (!preserveSelection && merged.length > 0) {
         loadDetail(merged[0]);
-      } else if (preserveSelection) {
-        setSelectedResult((prev) => {
-          if (!prev) return prev;
-          const updated = merged.find((r) => r.id === prev.id && r._type === prev._type);
-          if (updated && updated.status !== prev.status && (updated.status === 'success' || updated.status === 'failed')) {
-            loadDetail(updated);
-          }
-          return prev;
-        });
+      } else if (preserveSelection && selectedResultRef.current) {
+        const prev = selectedResultRef.current;
+        const updated = merged.find((r) => r.id === prev.id && r._type === prev._type);
+        if (updated && updated.status !== prev.status && (updated.status === 'success' || updated.status === 'failed')) {
+          loadDetail(updated);
+        }
       }
     } catch (err) {
       setError(err?.response?.data?.detail || 'Failed to load backtest results');

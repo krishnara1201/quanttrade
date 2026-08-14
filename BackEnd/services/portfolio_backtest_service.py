@@ -241,8 +241,9 @@ async def execute_portfolio_backtest(portfolio_backtest_id: int, db: AsyncSessio
         )
         metrics = aggregate_portfolio_metrics(per_ticker_results, portfolio_equity_curve, record.initial_capital)
     except Exception as e:
+        await db.rollback()
         record.status = "failed"
-        record.error_message = str(e)
+        record.error_message = f"{type(e).__name__}: {e}"
         await db.commit()
         return
 
