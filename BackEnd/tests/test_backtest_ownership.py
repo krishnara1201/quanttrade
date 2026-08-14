@@ -216,3 +216,56 @@ async def test_run_backtest_endpoint_marks_row_failed_when_delay_raises(session_
 
     assert newest.status == "failed"
     assert "Could not enqueue" in newest.error_message
+
+
+@pytest.mark.asyncio
+async def test_create_pending_backtest_persists_allow_short_and_stop_loss_take_profit(session_factory, seeded):
+    async with session_factory() as db:
+        user = await _reload_user(session_factory, seeded["user_id"])
+        record = await backtest_service.create_pending_backtest(
+            seeded["strategy_id"], "TEST", "2024-01-01", "2024-01-06",
+            db=db, user=user,
+            allow_short=True, stop_loss_pct=2.5, take_profit_pct=5.0,
+        )
+    assert record.allow_short is True
+    assert record.stop_loss_pct == 2.5
+    assert record.take_profit_pct == 5.0
+
+
+@pytest.mark.asyncio
+async def test_create_pending_backtest_rejects_non_positive_stop_loss_pct(session_factory, seeded):
+    from fastapi import HTTPException
+
+    async with session_factory() as db:
+        user = await _reload_user(session_factory, seeded["user_id"])
+        with pytest.raises(HTTPException) as exc_info:
+            await backtest_service.create_pending_backtest(
+                seeded["strategy_id"], "TEST", "2024-01-01", "2024-01-06",
+                db=db, user=user, stop_loss_pct=0,
+            )
+    assert exc_info.value.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_execute_backtest_passes_allow_short_and_stop_loss_take_profit_to_executor(session_factory, seeded, monkeypatch):
+    from services.strategy_executor import StrategyExecutor
+    captured = {}
+    original_backtest = StrategyExecutor.backtest
+
+    def spying_backtest(self, df, **kwargs):
+        captured.update(kwargs)
+        return original_backtest(self, df, **kwargs)
+
+    monkeypatch.setattr(StrategyExecutor, "backtest", spying_backtest)
+
+    async with session_factory() as db:
+        user = await _reload_user(session_factory, seeded["user_id"])
+        record = await backtest_service.create_pending_backtest(
+            seeded["strategy_id"], "TEST", "2024-01-01", "2024-01-06",
+            db=db, user=user, allow_short=True, stop_loss_pct=2.5, take_profit_pct=5.0,
+        )
+        await backtest_service.execute_backtest(record.id, db)
+
+    assert captured["allow_short"] is True
+    assert captured["stop_loss_pct"] == 2.5
+    assert captured["take_profit_pct"] == 5.0

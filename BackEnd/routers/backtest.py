@@ -24,6 +24,9 @@ class BacktestRequest(BaseModel):
     initial_capital: float = 10000.0
     commission_pct: float = 0.1
     slippage_pct: float = 0.05
+    allow_short: bool = False
+    stop_loss_pct: Optional[float] = None
+    take_profit_pct: Optional[float] = None
 
 class PortfolioTickerWeight(BaseModel):
     ticker: str
@@ -49,6 +52,7 @@ async def run_backtest_endpoint(
         req.strategy_id, req.ticker, req.start_date, req.end_date,
         req.initial_capital, req.commission_pct, req.slippage_pct,
         db, user,
+        allow_short=req.allow_short, stop_loss_pct=req.stop_loss_pct, take_profit_pct=req.take_profit_pct,
     )
     try:
         run_backtest_task.delay(record.id)
