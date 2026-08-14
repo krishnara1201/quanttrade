@@ -131,6 +131,94 @@ async def test_upload_market_data_csv_rejects_malformed_columns(session_factory,
     assert exc_info.value.status_code == 400
 
 
+@pytest.mark.asyncio
+async def test_upload_market_data_csv_requires_ticker_for_plain_csv(session_factory, user):
+    csv_bytes = b"Date,Open,High,Low,Close,Volume\n2024-01-02,1,2,0.5,1.5,100\n"
+    upload = UploadFile(file=io.BytesIO(csv_bytes), filename="aapl.csv")
+
+    async with session_factory() as db:
+        with pytest.raises(HTTPException) as exc_info:
+            await data_router.upload_market_data_csv(
+                ticker=None, file=upload, db=db, current_user=user,
+            )
+    assert exc_info.value.status_code == 400
+    assert "ticker is required" in exc_info.value.detail
+
+
+# ---- YYYYMMDD date parsing regression ---------------------------------------
+# Plain-integer YYYYMMDD dates (e.g. Excel/Stooq-style exports store
+# 19840907, not "1984-09-07") used to be misread by pd.to_datetime as
+# nanoseconds-since-epoch, landing every row within a fraction of a second of
+# 1970-01-01 instead of its real date.
+
+@pytest.mark.asyncio
+async def test_bulk_upsert_parses_yyyymmdd_integer_dates(session_factory):
+    df = pd.DataFrame([
+        {"date": 19840907, "open": 0.099173, "high": 0.10039, "low": 0.097975, "close": 0.099173, "volume": 99242379},
+        {"date": 19840910, "open": 0.099173, "high": 0.099477, "low": 0.096788, "close": 0.098584, "volume": 77028276},
+    ])
+    async with session_factory() as db:
+        result = await data_router._bulk_upsert_market_data("AAPL", df, db)
+    assert result == {"ticker": "AAPL", "inserted": 2, "skipped": 0}
+
+    async with session_factory() as db:
+        rows = (await db.execute(select(MarketData).where(MarketData.ticker == "AAPL"))).scalars().all()
+    dates = sorted(r.date for r in rows)
+    assert dates == [datetime(1984, 9, 7), datetime(1984, 9, 10)]
+
+
+# ---- Stooq-style headerless per-symbol .txt import --------------------------
+
+@pytest.mark.asyncio
+async def test_upload_market_data_csv_infers_ticker_from_stooq_txt(session_factory, user):
+    txt_bytes = (
+        b"AAPL.US,D,20260604,000000,313.23,313.54,309.65,311.23,44869134,0\n"
+        b"AAPL.US,D,20260605,000000,312.86,315.17,307.15,307.34,65310502,0\n"
+    )
+    upload = UploadFile(file=io.BytesIO(txt_bytes), filename="aapl.us.txt")
+
+    async with session_factory() as db:
+        result = await data_router.upload_market_data_csv(
+            ticker=None, file=upload, db=db, current_user=user,
+        )
+    assert result == {"ticker": "AAPL", "inserted": 2, "skipped": 0}
+
+    async with session_factory() as db:
+        rows = (await db.execute(select(MarketData).where(MarketData.ticker == "AAPL"))).scalars().all()
+    assert sorted(r.date for r in rows) == [datetime(2026, 6, 4), datetime(2026, 6, 5)]
+
+
+@pytest.mark.asyncio
+async def test_upload_market_data_csv_infers_ticker_from_stooq_header(session_factory, user):
+    txt_bytes = (
+        b"<TICKER>,<PER>,<DATE>,<TIME>,<OPEN>,<HIGH>,<LOW>,<CLOSE>,<VOL>,<OPENINT>\n"
+        b"MSFT.US,D,20260604,000000,313.23,313.54,309.65,311.23,44869134,0\n"
+    )
+    upload = UploadFile(file=io.BytesIO(txt_bytes), filename="msft.us.txt")
+
+    async with session_factory() as db:
+        result = await data_router.upload_market_data_csv(
+            ticker=None, file=upload, db=db, current_user=user,
+        )
+    assert result == {"ticker": "MSFT", "inserted": 1, "skipped": 0}
+
+
+@pytest.mark.asyncio
+async def test_upload_market_data_csv_splits_multiple_tickers_in_one_stooq_file(session_factory, user):
+    txt_bytes = (
+        b"AAPL.US,D,20260604,000000,313.23,313.54,309.65,311.23,44869134,0\n"
+        b"MSFT.US,D,20260604,000000,450.0,451.0,448.0,449.5,30000000,0\n"
+    )
+    upload = UploadFile(file=io.BytesIO(txt_bytes), filename="basket.txt")
+
+    async with session_factory() as db:
+        result = await data_router.upload_market_data_csv(
+            ticker=None, file=upload, db=db, current_user=user,
+        )
+    assert {r["ticker"] for r in result} == {"AAPL", "MSFT"}
+    assert all(r["inserted"] == 1 for r in result)
+
+
 # ---- POST /api/data/import/{ticker} (Alpha Vantage) ------------------------
 
 class _FakeResponse:

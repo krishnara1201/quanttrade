@@ -165,39 +165,44 @@ export default function DataPage() {
         </div>
 
         <div className="card">
-          <h3>Upload a CSV</h3>
+          <h3>Upload a CSV or TXT</h3>
           <p className="muted">
-            For data you already have (broker export, Yahoo Finance download, etc). Expects
-            columns Date, Open, High, Low, Close, Volume (Adj Close optional).
+            For data you already have. Two shapes are supported: a CSV with a header row
+            (Date, Open, High, Low, Close, Volume, Adj Close optional — e.g. a broker/Yahoo
+            Finance export; ticker is required below), or a headerless Stooq-style per-symbol
+            .txt export (<code>TICKER.US,D,YYYYMMDD,HHMMSS,Open,High,Low,Close,Volume,OpenInt</code>)
+            — the ticker is read from the file itself, so it can be left blank, and a file
+            covering more than one symbol is split and imported per-ticker automatically.
           </p>
           <form className="stack" onSubmit={handleCsvUpload}>
             <label className="field">
-              <span>Ticker</span>
+              <span>Ticker (required for plain CSVs; inferred automatically from .txt files)</span>
               <input
                 value={csvForm.ticker}
                 onChange={(e) => setCsvForm({ ...csvForm, ticker: e.target.value })}
                 placeholder="AAPL"
-                required
               />
             </label>
             <label className="field">
-              <span>CSV File</span>
+              <span>File</span>
               <input
                 type="file"
-                accept=".csv"
+                accept=".csv,.txt"
                 onChange={(e) => setCsvFile(e.target.files?.[0] || null)}
                 required
               />
             </label>
-            <button className="primary-btn" type="submit" disabled={csvLoading || !csvForm.ticker.trim() || !csvFile}>
+            <button className="primary-btn" type="submit" disabled={csvLoading || !csvFile}>
               {csvLoading ? 'Uploading...' : 'Upload'}
             </button>
           </form>
           {csvError && <div className="error-box" style={{ marginTop: '12px' }}>{csvError}</div>}
           {csvResult && (
-            <p className="muted" style={{ marginTop: '12px' }}>
-              {csvResult.ticker}: {csvResult.inserted} bar(s) imported, {csvResult.skipped} already on file.
-            </p>
+            <div className="muted" style={{ marginTop: '12px' }}>
+              {(Array.isArray(csvResult) ? csvResult : [csvResult]).map((r) => (
+                <p key={r.ticker}>{r.ticker}: {r.inserted} bar(s) imported, {r.skipped} already on file.</p>
+              ))}
+            </div>
           )}
         </div>
       </div>

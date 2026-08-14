@@ -1,5 +1,6 @@
 import io
 import os
+import re
 from datetime import datetime
 from typing import Optional
 
@@ -31,6 +32,69 @@ ALPHA_VANTAGE_URL = "https://www.alphavantage.co/query"
 
 REQUIRED_BAR_COLUMNS = {"date", "open", "high", "low", "close", "volume"}
 
+# Stooq's per-symbol export format: one row per bar, no ownership/auth
+# concerns since it's the same public OHLCV shape as the CSV path, just
+# headerless with the ticker embedded in column 0 as `SYMBOL.COUNTRY` (e.g.
+# `AAPL.US`), optionally preceded by a `<TICKER>,<PER>,...` header row.
+_STOOQ_SYMBOL_RE = re.compile(r"^[A-Za-z0-9^_-]+\.[A-Za-z]{1,3}$")
+_STOOQ_COLUMNS = ["ticker", "period", "date", "time", "open", "high", "low", "close", "volume", "openint"]
+
+
+def _parse_bar_dates(series: pd.Series) -> pd.Series:
+    """Parse a date column that's either a normal date string (left to
+    pandas' own inference) or a bare YYYYMMDD value (Excel/Stooq-style
+    exports store dates as e.g. 19840907, not "1984-09-07"). Without an
+    explicit format, `pd.to_datetime` on a raw 8-digit number reads it as
+    nanoseconds-since-epoch instead of a calendar date — 19840907 becomes
+    1970-01-01T00:00:00.019840907, not 1984-09-07 — so that shape needs
+    `format="%Y%m%d"` applied explicitly."""
+    text = series.astype(str).str.strip()
+    non_null = text[series.notna()]
+    if not non_null.empty and non_null.str.fullmatch(r"\d{8}").all():
+        return pd.to_datetime(text, format="%Y%m%d", errors="coerce")
+    return pd.to_datetime(series)
+
+
+def _split_bar_groups(content: bytes, ticker: Optional[str]) -> list[tuple[str, pd.DataFrame]]:
+    """Parse an uploaded market-data file into one or more (ticker, DataFrame)
+    groups. Two shapes are supported:
+      - a header'd OHLCV CSV (Date/Open/High/Low/Close/Volume, e.g. a Yahoo
+        Finance/broker export) — the long-standing format; `ticker` must be
+        supplied by the caller since the file itself doesn't carry one.
+      - a Stooq-style per-symbol export, headerless or with a `<TICKER>,...`
+        header, one row per bar as `TICKER.COUNTRY,PERIOD,YYYYMMDD,HHMMSS,
+        OPEN,HIGH,LOW,CLOSE,VOLUME,OPENINT` — the ticker is read off each row
+        instead (country suffix stripped), so `ticker` is optional and a file
+        spanning multiple symbols is split into one group per symbol.
+    """
+    text = content.decode("utf-8-sig", errors="replace")
+    first_line = next((line for line in text.splitlines() if line.strip()), "")
+    first_cell = first_line.split(",")[0].strip()
+    is_stooq_header = first_cell.upper() == "<TICKER>"
+    is_stooq_data = bool(_STOOQ_SYMBOL_RE.match(first_cell))
+
+    if is_stooq_header or is_stooq_data:
+        df = pd.read_csv(
+            io.StringIO(text),
+            header=0 if is_stooq_header else None,
+            names=None if is_stooq_header else _STOOQ_COLUMNS,
+        )
+        df = df.rename(columns={c: c.strip().lower().strip("<>") for c in df.columns})
+        df = df.rename(columns={"per": "period", "vol": "volume"})
+        missing = {"ticker", "date", "open", "high", "low", "close", "volume"} - set(df.columns)
+        if missing:
+            raise ValueError(f"Data is missing required column(s): {', '.join(sorted(missing))}")
+        df["ticker"] = df["ticker"].astype(str).str.split(".").str[0].str.upper()
+        return [(symbol, group.drop(columns=["ticker"])) for symbol, group in df.groupby("ticker", sort=True)]
+
+    try:
+        df = pd.read_csv(io.BytesIO(content))
+    except Exception as e:
+        raise ValueError(f"Could not parse file: {e}")
+    if not ticker:
+        raise ValueError("ticker is required for this file format")
+    return [(ticker, df)]
+
 
 async def _bulk_upsert_market_data(ticker: str, df: pd.DataFrame, db: AsyncSession) -> dict:
     """Insert bars from `df` for `ticker`, skipping any (ticker, date) pair
@@ -41,7 +105,7 @@ async def _bulk_upsert_market_data(ticker: str, df: pd.DataFrame, db: AsyncSessi
     if missing:
         raise ValueError(f"Data is missing required column(s): {', '.join(sorted(missing))}")
 
-    df["date"] = pd.to_datetime(df["date"])
+    df["date"] = _parse_bar_dates(df["date"])
     df = df.dropna(subset=["date", "open", "high", "low", "close", "volume"])
     if df.empty:
         return {"ticker": ticker, "inserted": 0, "skipped": 0}
@@ -110,23 +174,33 @@ async def upload_market_data(data: MarketDataCreate, db: AsyncSession = Depends(
 
 @router.post("/upload-csv")
 async def upload_market_data_csv(
-    ticker: str = Form(...),
+    ticker: Optional[str] = Form(None),
     file: UploadFile = File(...),
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """Bulk-import a ticker's OHLCV history from an uploaded CSV (e.g. an
-    export from Yahoo Finance/Stooq/a broker) instead of one bar per request."""
+    """Bulk-import OHLCV history from an uploaded file — either a header'd CSV
+    (Date/Open/High/Low/Close/Volume, e.g. a Yahoo Finance/broker export;
+    `ticker` is required for this shape) or a Stooq-style per-symbol export
+    (headerless `TICKER.COUNTRY,PERIOD,YYYYMMDD,HHMMSS,O,H,L,C,V,OpenInt` rows),
+    which carries its own ticker per row — `ticker` is optional there, and a
+    file spanning multiple symbols is imported as one group per symbol. See
+    `_split_bar_groups` for the format-detection details."""
     content = await file.read()
-    try:
-        df = pd.read_csv(io.BytesIO(content))
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Could not parse CSV: {e}")
+    ticker = ticker.strip().upper() if ticker else None
 
     try:
-        return await _bulk_upsert_market_data(ticker.upper(), df, db)
+        groups = _split_bar_groups(content, ticker)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+    results = []
+    for group_ticker, group_df in groups:
+        try:
+            results.append(await _bulk_upsert_market_data(group_ticker.upper(), group_df, db))
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+    return results[0] if len(results) == 1 else results
 
 @router.post("/import/{ticker}")
 async def import_market_data_from_web(

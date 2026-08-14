@@ -22,7 +22,7 @@ export async function getHistoricalData(ticker, startDate, endDate) {
 
 export async function uploadMarketDataCsv(ticker, file) {
   const formData = new FormData();
-  formData.append('ticker', ticker);
+  if (ticker) formData.append('ticker', ticker);
   formData.append('file', file);
   const { data } = await client.post('/api/data/upload-csv', formData, {
     headers: { 'Content-Type': 'multipart/form-data' },
