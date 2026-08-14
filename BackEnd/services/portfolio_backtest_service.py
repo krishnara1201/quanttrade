@@ -11,11 +11,13 @@ docs/superpowers/specs/2026-08-13-portfolio-backtests-design.md).
 from datetime import datetime
 from typing import Any, Dict, List
 
+import pandas as pd
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
-from database.models import MarketData
-from services.strategy_executor import max_drawdown_pct, sharpe_ratio
+from database.models import MarketData, PortfolioBacktestResult, Strategy, User
+from services.strategy_executor import StrategyExecutor, max_drawdown_pct, sharpe_ratio
 
 
 def normalize_weights(tickers: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -119,4 +121,109 @@ def aggregate_portfolio_metrics(
         "num_trades": len(exits),
         "max_drawdown_pct": max_drawdown_pct(portfolio_equity_curve),
         "sharpe_ratio": sharpe_ratio(portfolio_equity_curve),
+    }
+
+
+async def run_portfolio_backtest(
+    strategy_id: int,
+    tickers: List[Dict[str, Any]],
+    start_date: str,
+    end_date: str,
+    initial_capital: float,
+    commission_pct: float,
+    slippage_pct: float,
+    db: AsyncSession,
+    user: User,
+) -> Dict[str, Any]:
+    """Run a strategy independently across a basket of tickers, each funded
+    from a fixed weight of initial_capital, and return the aggregated
+    portfolio result. Raises ValueError for any validation/ownership/
+    execution failure — callers (e.g. the router) translate that to an
+    HTTP 400/403."""
+    strategy_result = await db.execute(
+        select(Strategy).options(selectinload(Strategy.project)).where(Strategy.id == strategy_id)
+    )
+    strategy = strategy_result.scalars().first()
+    if strategy is None:
+        raise ValueError("Strategy not found")
+    if strategy.project.owner_id != user.id:
+        raise ValueError("Unauthorized")
+
+    try:
+        start_dt = datetime.fromisoformat(start_date)
+        end_dt = datetime.fromisoformat(end_date)
+    except ValueError:
+        raise ValueError("start_date and end_date must be ISO-formatted dates (YYYY-MM-DD)")
+
+    allocations = normalize_weights(tickers)
+
+    for alloc in allocations:
+        await _check_ticker_coverage(alloc["ticker"], start_dt, end_dt, db)
+
+    per_ticker_results: Dict[str, Any] = {}
+    allocated_capital: Dict[str, float] = {}
+
+    for alloc in allocations:
+        ticker = alloc["ticker"]
+        sub_capital = initial_capital * alloc["weight"]
+        allocated_capital[ticker] = sub_capital
+
+        data_result = await db.execute(
+            select(MarketData).where(
+                MarketData.ticker == ticker,
+                MarketData.date >= start_dt,
+                MarketData.date <= end_dt,
+            ).order_by(MarketData.date)
+        )
+        rows = data_result.scalars().all()
+        df = pd.DataFrame([
+            {
+                "date": r.date, "open": float(r.open), "high": float(r.high),
+                "low": float(r.low), "close": float(r.close), "volume": float(r.volume),
+            }
+            for r in rows
+        ])
+        df.set_index("date", inplace=True)
+
+        try:
+            executor = StrategyExecutor(strategy.parameters, code=strategy.code)
+            result = executor.backtest(
+                df, initial_capital=sub_capital,
+                commission_pct=commission_pct, slippage_pct=slippage_pct,
+            )
+        except Exception as e:
+            raise ValueError(f"Backtest execution failed for {ticker}: {str(e)}")
+
+        per_ticker_results[ticker] = {**result, "allocated_capital": sub_capital}
+
+    portfolio_equity_curve = aggregate_equity_curves(
+        {t: r["equity_curve"] for t, r in per_ticker_results.items()},
+        allocated_capital,
+    )
+    metrics = aggregate_portfolio_metrics(per_ticker_results, portfolio_equity_curve, initial_capital)
+
+    record = PortfolioBacktestResult(
+        strategy_id=strategy_id,
+        start_date=start_dt,
+        end_date=end_dt,
+        initial_capital=initial_capital,
+        commission_pct=commission_pct,
+        slippage_pct=slippage_pct,
+        allocations=allocations,
+        results=metrics,
+        equity_curve=portfolio_equity_curve,
+        per_ticker=per_ticker_results,
+    )
+    db.add(record)
+    await db.commit()
+    await db.refresh(record)
+
+    return {
+        "id": record.id,
+        "strategy_id": strategy_id,
+        "allocations": allocations,
+        "metrics": metrics,
+        "equity_curve": portfolio_equity_curve,
+        "per_ticker": per_ticker_results,
+        "created_at": record.created_at.isoformat(),
     }

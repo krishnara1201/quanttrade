@@ -197,3 +197,114 @@ def test_aggregate_portfolio_metrics_handles_no_trades():
     metrics = aggregate_portfolio_metrics({"AAPL": {"trades": []}}, portfolio_equity_curve, 1000.0)
     assert metrics["num_trades"] == 0
     assert metrics["win_rate"] == 0.0
+
+
+from services import portfolio_backtest_service
+
+
+@pytest_asyncio.fixture
+async def portfolio_seeded(session_factory):
+    """User/project/strategy plus two tickers of clean, hand-verifiable price data."""
+    async with session_factory() as db:
+        user = User(name="Ada", email="ada@example.com", password_hash="x")
+        db.add(user)
+        await db.flush()
+        project = Project(name="proj", owner_id=user.id)
+        db.add(project)
+        await db.flush()
+        strategy = Strategy(
+            name="strat",
+            project_id=project.id,
+            parameters=json.dumps({
+                "name": "strat",
+                "parameters": {},
+                "rules": {"entry": "close > 0", "exit": "close < 0"},
+            }),
+        )
+        db.add(strategy)
+        await db.flush()
+
+        # AAPL: flat at 100 the whole time (no entry signal ever fires -> stays in cash)
+        for i in range(5):
+            db.add(MarketData(
+                ticker="AAPL", date=datetime(2024, 1, i + 1), open="100", high="100",
+                low="100", close="100", volume="1000",
+            ))
+        # MSFT: same, flat at 200
+        for i in range(5):
+            db.add(MarketData(
+                ticker="MSFT", date=datetime(2024, 1, i + 1), open="200", high="200",
+                low="200", close="200", volume="1000",
+            ))
+        await db.commit()
+        return {"user_id": user.id, "strategy_id": strategy.id}
+
+
+async def _reload_user(session_factory, user_id):
+    async with session_factory() as db:
+        result = await db.execute(select(User).where(User.id == user_id))
+        return result.scalars().first()
+
+
+@pytest.mark.asyncio
+async def test_run_portfolio_backtest_allocates_and_aggregates(session_factory, portfolio_seeded):
+    async with session_factory() as db:
+        user = await _reload_user(session_factory, portfolio_seeded["user_id"])
+        response = await portfolio_backtest_service.run_portfolio_backtest(
+            portfolio_seeded["strategy_id"],
+            [{"ticker": "AAPL", "weight": 1}, {"ticker": "MSFT", "weight": 1}],
+            "2024-01-01", "2024-01-05",
+            10000.0, 0.1, 0.05,
+            db, user,
+        )
+
+    assert response["allocations"] == [
+        {"ticker": "AAPL", "weight": pytest.approx(0.5)},
+        {"ticker": "MSFT", "weight": pytest.approx(0.5)},
+    ]
+    # Neither ticker's "close > 0" entry rule ever fires against flat prices with no
+    # prior bar transition here (rules mode only evaluates from index 1), so with a
+    # constant entry condition true from bar 1 onward AAPL/MSFT do open a position;
+    # the exact P&L isn't asserted — this test verifies orchestration and shape.
+    assert set(response["per_ticker"].keys()) == {"AAPL", "MSFT"}
+    assert response["per_ticker"]["AAPL"]["allocated_capital"] == pytest.approx(5000.0)
+    assert response["per_ticker"]["MSFT"]["allocated_capital"] == pytest.approx(5000.0)
+    assert len(response["equity_curve"]) == 5
+    assert "return_pct" in response["metrics"]
+
+
+@pytest.mark.asyncio
+async def test_run_portfolio_backtest_rejects_insufficient_coverage(session_factory, portfolio_seeded):
+    async with session_factory() as db:
+        user = await _reload_user(session_factory, portfolio_seeded["user_id"])
+        with pytest.raises(ValueError, match="AAPL"):
+            await portfolio_backtest_service.run_portfolio_backtest(
+                portfolio_seeded["strategy_id"],
+                [{"ticker": "AAPL", "weight": 1}, {"ticker": "MSFT", "weight": 1}],
+                "2023-01-01", "2024-01-05",  # AAPL/MSFT data only starts 2024-01-01
+                10000.0, 0.1, 0.05,
+                db, user,
+            )
+
+
+@pytest.mark.asyncio
+async def test_run_portfolio_backtest_does_not_raise_missing_greenlet_on_unauthorized(session_factory, portfolio_seeded):
+    """Ownership-check regression, mirroring test_backtest_ownership.py: a user
+    who doesn't own the project must get a clean error, not MissingGreenlet."""
+    async with session_factory() as db:
+        other_user = User(name="Bob", email="bob@example.com", password_hash="x")
+        db.add(other_user)
+        await db.commit()
+        await db.refresh(other_user)
+
+    async with session_factory() as db:
+        result = await db.execute(select(User).where(User.id == other_user.id))
+        bob = result.scalars().first()
+        with pytest.raises(ValueError, match="Unauthorized"):
+            await portfolio_backtest_service.run_portfolio_backtest(
+                portfolio_seeded["strategy_id"],
+                [{"ticker": "AAPL", "weight": 1}, {"ticker": "MSFT", "weight": 1}],
+                "2024-01-01", "2024-01-05",
+                10000.0, 0.1, 0.05,
+                db, bob,
+            )
