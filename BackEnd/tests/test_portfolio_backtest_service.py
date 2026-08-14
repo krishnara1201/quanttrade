@@ -10,8 +10,8 @@ import pytest_asyncio
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
 
-from database.models import Base, User, Project, Strategy, PortfolioBacktestResult
-from services.portfolio_backtest_service import normalize_weights
+from database.models import Base, User, Project, Strategy, PortfolioBacktestResult, MarketData
+from services.portfolio_backtest_service import normalize_weights, _check_ticker_coverage
 
 
 @pytest_asyncio.fixture
@@ -89,3 +89,39 @@ def test_normalize_weights_rejects_non_positive_weight():
 def test_normalize_weights_rejects_duplicate_ticker():
     with pytest.raises(ValueError, match="Duplicate"):
         normalize_weights([{"ticker": "AAPL", "weight": 1}, {"ticker": "AAPL", "weight": 1}])
+
+
+async def _seed_market_data(db, ticker, dates_and_closes):
+    for d, close in dates_and_closes:
+        db.add(MarketData(
+            ticker=ticker, date=d, open=str(close), high=str(close),
+            low=str(close), close=str(close), volume="1000",
+        ))
+    await db.commit()
+
+
+@pytest.mark.asyncio
+async def test_check_ticker_coverage_passes_when_range_is_covered(session_factory):
+    async with session_factory() as db:
+        await _seed_market_data(db, "AAPL", [
+            (datetime(2024, 1, 1), 10), (datetime(2024, 1, 10), 12),
+        ])
+        # Should not raise
+        await _check_ticker_coverage("AAPL", datetime(2024, 1, 1), datetime(2024, 1, 10), db)
+
+
+@pytest.mark.asyncio
+async def test_check_ticker_coverage_rejects_shorter_range(session_factory):
+    async with session_factory() as db:
+        await _seed_market_data(db, "AAPL", [
+            (datetime(2024, 1, 3), 10), (datetime(2024, 1, 7), 12),
+        ])
+        with pytest.raises(ValueError, match="AAPL"):
+            await _check_ticker_coverage("AAPL", datetime(2024, 1, 1), datetime(2024, 1, 10), db)
+
+
+@pytest.mark.asyncio
+async def test_check_ticker_coverage_rejects_missing_ticker(session_factory):
+    async with session_factory() as db:
+        with pytest.raises(ValueError, match="MSFT"):
+            await _check_ticker_coverage("MSFT", datetime(2024, 1, 1), datetime(2024, 1, 10), db)
