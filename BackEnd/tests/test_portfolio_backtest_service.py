@@ -11,7 +11,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
 
 from database.models import Base, User, Project, Strategy, PortfolioBacktestResult, MarketData
-from services.portfolio_backtest_service import normalize_weights, _check_ticker_coverage
+from services.portfolio_backtest_service import normalize_weights, _check_ticker_coverage, aggregate_equity_curves
 
 
 @pytest_asyncio.fixture
@@ -125,3 +125,42 @@ async def test_check_ticker_coverage_rejects_missing_ticker(session_factory):
     async with session_factory() as db:
         with pytest.raises(ValueError, match="MSFT"):
             await _check_ticker_coverage("MSFT", datetime(2024, 1, 1), datetime(2024, 1, 10), db)
+
+
+def test_aggregate_equity_curves_sums_matching_dates():
+    curves = {
+        "AAPL": [{"date": "d1", "equity": 100.0}, {"date": "d2", "equity": 110.0}],
+        "MSFT": [{"date": "d1", "equity": 200.0}, {"date": "d2", "equity": 190.0}],
+    }
+    result = aggregate_equity_curves(curves, {"AAPL": 100.0, "MSFT": 200.0})
+    assert result == [
+        {"date": "d1", "equity": 300.0},
+        {"date": "d2", "equity": 300.0},
+    ]
+
+
+def test_aggregate_equity_curves_forward_fills_missing_middle_date():
+    # MSFT has no bar on "d2" (a bar-level gap) — its d1 value should carry forward
+    curves = {
+        "AAPL": [{"date": "d1", "equity": 100.0}, {"date": "d2", "equity": 110.0}, {"date": "d3", "equity": 120.0}],
+        "MSFT": [{"date": "d1", "equity": 200.0}, {"date": "d3", "equity": 205.0}],
+    }
+    result = aggregate_equity_curves(curves, {"AAPL": 100.0, "MSFT": 200.0})
+    assert result == [
+        {"date": "d1", "equity": 300.0},
+        {"date": "d2", "equity": 310.0},  # AAPL 110 + MSFT forward-filled 200
+        {"date": "d3", "equity": 325.0},
+    ]
+
+
+def test_aggregate_equity_curves_uses_allocated_capital_before_first_point():
+    # MSFT's curve starts at "d2" — "d1" should use its starting allocated_capital
+    curves = {
+        "AAPL": [{"date": "d1", "equity": 100.0}, {"date": "d2", "equity": 110.0}],
+        "MSFT": [{"date": "d2", "equity": 205.0}],
+    }
+    result = aggregate_equity_curves(curves, {"AAPL": 100.0, "MSFT": 200.0})
+    assert result == [
+        {"date": "d1", "equity": 300.0},  # AAPL 100 + MSFT's uninvested 200
+        {"date": "d2", "equity": 315.0},
+    ]

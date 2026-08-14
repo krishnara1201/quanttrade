@@ -61,3 +61,30 @@ async def _check_ticker_coverage(ticker: str, start_dt: datetime, end_dt: dateti
             f"{ticker} has data from {min_date.date()} to {max_date.date()}, "
             f"which does not cover the requested {start_dt.date()} to {end_dt.date()}"
         )
+
+
+def aggregate_equity_curves(
+    per_ticker_curves: Dict[str, List[Dict[str, Any]]],
+    allocated_capital: Dict[str, float],
+) -> List[Dict[str, Any]]:
+    """Combine per-ticker equity curves (each a chronologically-ordered list
+    of {'date', 'equity'} dicts) into one portfolio equity curve summed
+    across tickers. Dates are the union across all tickers; a ticker with no
+    entry for a given date uses its last-known equity (forward-fill), or its
+    starting allocated_capital for any date before its first data point."""
+    all_dates = sorted({point["date"] for curve in per_ticker_curves.values() for point in curve})
+    lookups = {
+        ticker: {p["date"]: p["equity"] for p in curve}
+        for ticker, curve in per_ticker_curves.items()
+    }
+
+    last_known = dict(allocated_capital)
+    portfolio_curve = []
+    for date in all_dates:
+        total = 0.0
+        for ticker, lookup in lookups.items():
+            if date in lookup:
+                last_known[ticker] = lookup[date]
+            total += last_known[ticker]
+        portfolio_curve.append({"date": date, "equity": total})
+    return portfolio_curve
