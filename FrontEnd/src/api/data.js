@@ -45,3 +45,8 @@ export async function getImportJob(jobId) {
   const { data } = await client.get(`/api/data/jobs/${jobId}`);
   return data;
 }
+
+export async function deleteTickerData(ticker) {
+  const { data } = await client.delete(`/api/data/${ticker}/all`);
+  return data;
+}

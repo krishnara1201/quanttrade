@@ -5,7 +5,7 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from pydantic import BaseModel
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from database.models import User, Project, Strategy, MarketData, DataImportJob
 from database.connection import AsyncSessionLocal, get_db
@@ -211,3 +211,19 @@ async def delete_market_data(data_id: int, db: AsyncSession = Depends(get_db), c
     await db.delete(data)
     await db.commit()
     return {"detail": "Market data deleted"}
+
+@router.delete("/{ticker}/all")
+async def delete_ticker_data(ticker: str, db: AsyncSession = Depends(get_db), current_user: User = Depends(get_current_user)):
+    """Bulk-delete every MarketData row for a ticker in one action — the
+    single-row DELETE /{data_id} above is impractical once a ticker has
+    thousands of bars."""
+    count_result = await db.execute(
+        select(func.count(MarketData.id)).where(MarketData.ticker == ticker)
+    )
+    count = count_result.scalar_one()
+    if not count:
+        raise HTTPException(status_code=404, detail=f"No market data found for ticker '{ticker}'")
+
+    await db.execute(delete(MarketData).where(MarketData.ticker == ticker))
+    await db.commit()
+    return {"ticker": ticker, "deleted": count}

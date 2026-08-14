@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import * as dataApi from '../api/data.js';
 import { pollUntil } from '../api/pollUntil.js';
+import MarketDataChart from '../components/MarketDataChart.jsx';
 
 const API_KEY_STORAGE_KEY = 'quanttrade_alpha_vantage_api_key';
 
@@ -8,6 +9,13 @@ export default function DataPage() {
   const [tickers, setTickers] = useState([]);
   const [tickerDetails, setTickerDetails] = useState({});
   const [tickersLoading, setTickersLoading] = useState(true);
+  const [deletingTicker, setDeletingTicker] = useState(null);
+
+  const [chartTicker, setChartTicker] = useState('');
+  const [chartRange, setChartRange] = useState({ startDate: '', endDate: '' });
+  const [chartData, setChartData] = useState([]);
+  const [chartLoading, setChartLoading] = useState(false);
+  const [chartError, setChartError] = useState('');
 
   const [webForm, setWebForm] = useState({ ticker: '', startDate: '', endDate: '' });
   const [apiKey, setApiKey] = useState(() => localStorage.getItem(API_KEY_STORAGE_KEY) || '');
@@ -44,6 +52,57 @@ export default function DataPage() {
   useEffect(() => {
     loadTickers();
   }, []);
+
+  useEffect(() => {
+    if (!chartTicker && tickers.length) {
+      setChartTicker(tickers[0]);
+    }
+  }, [tickers, chartTicker]);
+
+  useEffect(() => {
+    if (!chartTicker) return;
+    const details = tickerDetails[chartTicker];
+    const startDate = details?.start_date?.slice(0, 10) || '';
+    const endDate = details?.end_date?.slice(0, 10) || '';
+    setChartRange({ startDate, endDate });
+  }, [chartTicker, tickerDetails]);
+
+  useEffect(() => {
+    if (!chartTicker || !chartRange.startDate || !chartRange.endDate) return;
+    let cancelled = false;
+    setChartLoading(true);
+    setChartError('');
+    dataApi.getHistoricalData(chartTicker, chartRange.startDate, chartRange.endDate)
+      .then((rows) => {
+        if (!cancelled) setChartData(rows || []);
+      })
+      .catch((err) => {
+        if (!cancelled) setChartError(err?.response?.data?.detail || err.message || 'Failed to load chart data');
+      })
+      .finally(() => {
+        if (!cancelled) setChartLoading(false);
+      });
+    return () => { cancelled = true; };
+  }, [chartTicker, chartRange.startDate, chartRange.endDate]);
+
+  const handleDeleteTicker = async (ticker) => {
+    if (!window.confirm(`Delete all stored data for ${ticker}? This cannot be undone.`)) {
+      return;
+    }
+    setDeletingTicker(ticker);
+    try {
+      await dataApi.deleteTickerData(ticker);
+      if (chartTicker === ticker) {
+        setChartTicker('');
+        setChartData([]);
+      }
+      await loadTickers();
+    } catch (err) {
+      window.alert(err?.response?.data?.detail || err.message || 'Delete failed');
+    } finally {
+      setDeletingTicker(null);
+    }
+  };
 
   const handleApiKeyChange = (value) => {
     setApiKey(value);
@@ -247,10 +306,61 @@ export default function DataPage() {
                     </p>
                   )}
                 </div>
+                <button
+                  className="ghost-btn"
+                  onClick={() => handleDeleteTicker(t)}
+                  disabled={deletingTicker === t}
+                >
+                  {deletingTicker === t ? 'Deleting...' : 'Delete'}
+                </button>
               </div>
             );
           })}
         </div>
+      </div>
+
+      <div className="card" style={{ marginTop: '20px' }}>
+        <h3>Visualize</h3>
+        {!tickersLoading && !tickers.length && <p className="muted">Import some data first.</p>}
+        {!!tickers.length && (
+          <>
+            <div className="stack" style={{ flexDirection: 'row', gap: '12px', flexWrap: 'wrap', alignItems: 'flex-end' }}>
+              <label className="field">
+                <span>Ticker</span>
+                <select value={chartTicker} onChange={(e) => setChartTicker(e.target.value)}>
+                  {tickers.map((t) => <option key={t} value={t}>{t}</option>)}
+                </select>
+              </label>
+              <label className="field">
+                <span>Start Date</span>
+                <input
+                  type="date"
+                  value={chartRange.startDate}
+                  min={tickerDetails[chartTicker]?.start_date?.slice(0, 10)}
+                  max={tickerDetails[chartTicker]?.end_date?.slice(0, 10)}
+                  onChange={(e) => setChartRange({ ...chartRange, startDate: e.target.value })}
+                />
+              </label>
+              <label className="field">
+                <span>End Date</span>
+                <input
+                  type="date"
+                  value={chartRange.endDate}
+                  min={tickerDetails[chartTicker]?.start_date?.slice(0, 10)}
+                  max={tickerDetails[chartTicker]?.end_date?.slice(0, 10)}
+                  onChange={(e) => setChartRange({ ...chartRange, endDate: e.target.value })}
+                />
+              </label>
+            </div>
+            {chartLoading && <p className="muted" style={{ marginTop: '12px' }}>Loading chart...</p>}
+            {chartError && <div className="error-box" style={{ marginTop: '12px' }}>{chartError}</div>}
+            {!chartLoading && !chartError && (
+              <div style={{ marginTop: '12px' }}>
+                <MarketDataChart data={chartData} />
+              </div>
+            )}
+          </>
+        )}
       </div>
     </div>
   );
