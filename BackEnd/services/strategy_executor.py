@@ -282,8 +282,12 @@ class StrategyExecutor:
         return None, 0, 0.0, 0.0, cash
 
     def _execute_trades(self, df: pd.DataFrame, initial_capital: float,
-                         commission_pct: float = 0.1, slippage_pct: float = 0.05):
-        """Execute trades based on signals using capital-based sizing with commission/slippage"""
+                         commission_pct: float = 0.1, slippage_pct: float = 0.05,
+                         allow_short: bool = False):
+        """Execute trades based on signals using capital-based sizing with
+        commission/slippage. allow_short=True reinterprets signal=-1 as a short
+        entry when flat (still an exit when long); signal=1 while short covers
+        it and can then open a new long the same bar."""
         trades = []
         equity_curve = []
         cash = initial_capital
@@ -297,17 +301,33 @@ class StrategyExecutor:
             close_price = df['close'].iloc[i]
             timestamp = self._format_date(df.index[i])
 
-            if signal == 1 and direction is None:
-                direction, qty, entry_price, entry_basis, cash = self._open_position(
-                    'long', close_price, cash, commission_pct, slippage_pct, timestamp, trades,
-                )
-            elif signal == -1 and direction == 'long':
-                direction, qty, entry_price, entry_basis, cash = self._close_position(
-                    direction, qty, entry_basis, close_price, cash,
-                    commission_pct, slippage_pct, timestamp, 'signal', trades,
-                )
+            if signal == 1:
+                if direction == 'short':
+                    direction, qty, entry_price, entry_basis, cash = self._close_position(
+                        direction, qty, entry_basis, close_price, cash,
+                        commission_pct, slippage_pct, timestamp, 'signal', trades,
+                    )
+                if direction is None:
+                    direction, qty, entry_price, entry_basis, cash = self._open_position(
+                        'long', close_price, cash, commission_pct, slippage_pct, timestamp, trades,
+                    )
+            elif signal == -1:
+                if direction == 'long':
+                    direction, qty, entry_price, entry_basis, cash = self._close_position(
+                        direction, qty, entry_basis, close_price, cash,
+                        commission_pct, slippage_pct, timestamp, 'signal', trades,
+                    )
+                if direction is None and allow_short:
+                    direction, qty, entry_price, entry_basis, cash = self._open_position(
+                        'short', close_price, cash, commission_pct, slippage_pct, timestamp, trades,
+                    )
 
-            equity = cash + (qty * close_price if direction == 'long' else 0)
+            if direction == 'long':
+                equity = cash + qty * close_price
+            elif direction == 'short':
+                equity = cash - qty * close_price
+            else:
+                equity = cash
             equity_curve.append({'date': timestamp, 'equity': float(equity)})
 
         return trades, equity_curve

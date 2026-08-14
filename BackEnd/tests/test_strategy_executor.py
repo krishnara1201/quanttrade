@@ -284,3 +284,49 @@ def test_metrics_use_equity_curve_final_value_when_position_still_open():
     assert expected_final_capital != pytest.approx(1000.0)
     assert metrics["final_capital"] == pytest.approx(expected_final_capital, rel=1e-9)
     assert metrics["total_return"] == pytest.approx(expected_final_capital - 1000.0, rel=1e-9)
+
+
+def test_execute_trades_allow_short_false_ignores_negative_signal_when_flat():
+    closes = [100, 100, 90]
+    df = make_price_df(closes)
+    df["signal"] = [0, -1, 1]
+    executor = make_executor()
+
+    trades, equity_curve = executor._execute_trades(
+        df, initial_capital=1000.0, commission_pct=1.0, slippage_pct=0.5,
+    )
+
+    assert trades == []
+    assert all(pt['equity'] == pytest.approx(1000.0) for pt in equity_curve)
+
+
+def test_execute_trades_allow_short_opens_short_and_can_reflip_to_long_same_bar():
+    closes = [100, 100, 90]
+    df = make_price_df(closes)
+    df["signal"] = [0, -1, 1]
+    executor = make_executor()
+
+    trades, equity_curve = executor._execute_trades(
+        df, initial_capital=1000.0, commission_pct=1.0, slippage_pct=0.5, allow_short=True,
+    )
+
+    assert len(trades) == 3
+    short_entry, short_exit, long_entry = trades
+
+    assert short_entry == {
+        'type': 'entry', 'direction': 'short',
+        'price': pytest.approx(99.5, abs=1e-6), 'date': df.index[1].isoformat(), 'size': 9,
+    }
+    assert short_exit['type'] == 'exit'
+    assert short_exit['direction'] == 'short'
+    assert short_exit['exit_reason'] == 'signal'
+    assert short_exit['price'] == pytest.approx(90.45, abs=1e-6)
+    assert short_exit['pnl'] == pytest.approx(64.3545, abs=1e-3)
+    assert long_entry == {
+        'type': 'entry', 'direction': 'long',
+        'price': pytest.approx(90.45, abs=1e-6), 'date': df.index[2].isoformat(), 'size': 11,
+    }
+
+    assert equity_curve[0]['equity'] == pytest.approx(1000.0, abs=1e-6)
+    assert equity_curve[1]['equity'] == pytest.approx(986.545, abs=1e-3)
+    assert equity_curve[2]['equity'] == pytest.approx(1049.455, abs=1e-3)
