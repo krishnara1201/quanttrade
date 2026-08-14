@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import * as dataApi from '../api/data.js';
+import { pollUntil } from '../api/pollUntil.js';
 
 const API_KEY_STORAGE_KEY = 'quanttrade_alpha_vantage_api_key';
 
@@ -59,16 +60,24 @@ export default function DataPage() {
     setWebError('');
     setWebResult(null);
     try {
-      const result = await dataApi.importMarketDataFromWeb(
+      const { job_id } = await dataApi.importMarketDataFromWeb(
         webForm.ticker.trim().toUpperCase(),
         webForm.startDate,
         webForm.endDate,
         apiKey.trim()
       );
-      setWebResult(result);
-      await loadTickers();
+      const job = await pollUntil(
+        () => dataApi.getImportJob(job_id),
+        (j) => j.status === 'success' || j.status === 'failed'
+      );
+      if (job.status === 'failed') {
+        setWebError(job.error_message || 'Import failed');
+      } else {
+        setWebResult(job.result);
+        await loadTickers();
+      }
     } catch (err) {
-      setWebError(err?.response?.data?.detail || 'Import failed');
+      setWebError(err?.response?.data?.detail || err.message || 'Import failed');
     } finally {
       setWebLoading(false);
     }
@@ -84,11 +93,19 @@ export default function DataPage() {
     setCsvError('');
     setCsvResult(null);
     try {
-      const result = await dataApi.uploadMarketDataCsv(csvForm.ticker.trim().toUpperCase(), csvFile);
-      setCsvResult(result);
-      await loadTickers();
+      const { job_id } = await dataApi.uploadMarketDataCsv(csvForm.ticker.trim().toUpperCase(), csvFile);
+      const job = await pollUntil(
+        () => dataApi.getImportJob(job_id),
+        (j) => j.status === 'success' || j.status === 'failed'
+      );
+      if (job.status === 'failed') {
+        setCsvError(job.error_message || 'Upload failed');
+      } else {
+        setCsvResult(job.result);
+        await loadTickers();
+      }
     } catch (err) {
-      setCsvError(err?.response?.data?.detail || 'Upload failed');
+      setCsvError(err?.response?.data?.detail || err.message || 'Upload failed');
     } finally {
       setCsvLoading(false);
     }

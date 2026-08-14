@@ -40,3 +40,8 @@ export async function importMarketDataFromWeb(ticker, startDate, endDate, apiKey
   });
   return data;
 }
+
+export async function getImportJob(jobId) {
+  const { data } = await client.get(`/api/data/jobs/${jobId}`);
+  return data;
+}
