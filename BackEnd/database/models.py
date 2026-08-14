@@ -71,6 +71,9 @@ class BacktestResult(Base):
     initial_capital = Column(Float, nullable=True)
     commission_pct = Column(Float, nullable=True)
     slippage_pct = Column(Float, nullable=True)
+    allow_short = Column(Boolean, default=False, nullable=False)
+    stop_loss_pct = Column(Float, nullable=True)
+    take_profit_pct = Column(Float, nullable=True)
     results = Column(JSON, default={})  # Summary stats, performance metrics stored as JSON
     trades = Column(JSON, default=[])  # List of trades executed, each with details (entry/exit, price, size)
     signals = Column(JSON, default=[])  # Per-bar {date, close, signal} series for charting
@@ -91,6 +94,9 @@ class PortfolioBacktestResult(Base):
     initial_capital = Column(Float, nullable=False)
     commission_pct = Column(Float, nullable=False)
     slippage_pct = Column(Float, nullable=False)
+    allow_short = Column(Boolean, default=False, nullable=False)
+    stop_loss_pct = Column(Float, nullable=True)
+    take_profit_pct = Column(Float, nullable=True)
     allocations = Column(JSON, default=[])   # [{ticker, weight}] — normalized weights actually used
     results = Column(JSON, default={})       # aggregate portfolio metrics
     equity_curve = Column(JSON, default=[])  # aggregate portfolio {date, equity} series
