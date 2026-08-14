@@ -56,7 +56,9 @@ class StrategyExecutor:
         return True
     
     def backtest(self, df: pd.DataFrame, initial_capital: float = 10000.0,
-                 commission_pct: float = 0.1, slippage_pct: float = 0.05) -> Dict[str, Any]:
+                 commission_pct: float = 0.1, slippage_pct: float = 0.05,
+                 allow_short: bool = False, stop_loss_pct: float = None,
+                 take_profit_pct: float = None) -> Dict[str, Any]:
         """
         Run backtest on market data
 
@@ -94,7 +96,10 @@ class StrategyExecutor:
                 elif self._evaluate_condition(rules['exit'], df, i):
                     df.iloc[i, df.columns.get_loc('signal')] = -1
 
-        trades, equity_curve = self._execute_trades(df, initial_capital, commission_pct, slippage_pct)
+        trades, equity_curve = self._execute_trades(
+            df, initial_capital, commission_pct, slippage_pct,
+            allow_short=allow_short, stop_loss_pct=stop_loss_pct, take_profit_pct=take_profit_pct,
+        )
         metrics = self._calculate_metrics(df, trades, initial_capital, equity_curve)
 
         signals = [
@@ -283,11 +288,15 @@ class StrategyExecutor:
 
     def _execute_trades(self, df: pd.DataFrame, initial_capital: float,
                          commission_pct: float = 0.1, slippage_pct: float = 0.05,
-                         allow_short: bool = False):
+                         allow_short: bool = False,
+                         stop_loss_pct: float = None, take_profit_pct: float = None):
         """Execute trades based on signals using capital-based sizing with
         commission/slippage. allow_short=True reinterprets signal=-1 as a short
         entry when flat (still an exit when long); signal=1 while short covers
-        it and can then open a new long the same bar."""
+        it and can then open a new long the same bar. stop_loss_pct/take_profit_pct,
+        if set, force a close-only exit each bar (checked against that bar's
+        close, before the bar's own signal is evaluated) independent of signal —
+        so a forced exit can still be followed by a same-bar re-entry."""
         trades = []
         equity_curve = []
         cash = initial_capital
@@ -300,6 +309,24 @@ class StrategyExecutor:
             signal = df['signal'].iloc[i] if 'signal' in df.columns else 0
             close_price = df['close'].iloc[i]
             timestamp = self._format_date(df.index[i])
+
+            if direction is not None:
+                exit_reason = None
+                if direction == 'long':
+                    if stop_loss_pct and close_price <= entry_price * (1 - stop_loss_pct / 100):
+                        exit_reason = 'stop_loss'
+                    elif take_profit_pct and close_price >= entry_price * (1 + take_profit_pct / 100):
+                        exit_reason = 'take_profit'
+                else:
+                    if stop_loss_pct and close_price >= entry_price * (1 + stop_loss_pct / 100):
+                        exit_reason = 'stop_loss'
+                    elif take_profit_pct and close_price <= entry_price * (1 - take_profit_pct / 100):
+                        exit_reason = 'take_profit'
+                if exit_reason:
+                    direction, qty, entry_price, entry_basis, cash = self._close_position(
+                        direction, qty, entry_basis, close_price, cash,
+                        commission_pct, slippage_pct, timestamp, exit_reason, trades,
+                    )
 
             if signal == 1:
                 if direction == 'short':
