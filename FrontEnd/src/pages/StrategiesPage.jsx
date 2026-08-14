@@ -41,6 +41,9 @@ export default function StrategiesPage() {
     startDate: '2023-01-01',
     endDate: '2024-01-01',
     initialCapital: 10000,
+    allowShort: false,
+    stopLossPct: '',
+    takeProfitPct: '',
   });
   const [backtestMode, setBacktestMode] = useState('single');
   const [portfolioRows, setPortfolioRows] = useState([
@@ -157,13 +160,20 @@ export default function StrategiesPage() {
     setBacktestLoading(true);
     setError('');
     try {
+      const stopLossPct = backtestForm.stopLossPct === '' ? null : Number(backtestForm.stopLossPct);
+      const takeProfitPct = backtestForm.takeProfitPct === '' ? null : Number(backtestForm.takeProfitPct);
       if (backtestMode === 'portfolio') {
         await backtestApi.runPortfolioBacktest(
           selectedStrategyId,
           validPortfolioRows.map((r) => ({ ticker: r.ticker, weight: Number(r.weight) })),
           backtestForm.startDate,
           backtestForm.endDate,
-          backtestForm.initialCapital
+          backtestForm.initialCapital,
+          0.1,
+          0.05,
+          backtestForm.allowShort,
+          stopLossPct,
+          takeProfitPct
         );
       } else {
         await backtestApi.runBacktest(
@@ -171,7 +181,12 @@ export default function StrategiesPage() {
           backtestForm.ticker,
           backtestForm.startDate,
           backtestForm.endDate,
-          backtestForm.initialCapital
+          backtestForm.initialCapital,
+          0.1,
+          0.05,
+          backtestForm.allowShort,
+          stopLossPct,
+          takeProfitPct
         );
       }
       // Redirect to results page
@@ -339,6 +354,39 @@ export default function StrategiesPage() {
                     type="number"
                     value={backtestForm.initialCapital}
                     onChange={(e) => setBacktestForm({ ...backtestForm, initialCapital: Number(e.target.value) })}
+                  />
+                </label>
+                <label className="field">
+                  <span>
+                    <input
+                      type="checkbox"
+                      checked={backtestForm.allowShort}
+                      onChange={(e) => setBacktestForm({ ...backtestForm, allowShort: e.target.checked })}
+                      style={{ marginRight: '6px' }}
+                    />
+                    Allow shorting
+                  </span>
+                </label>
+                <label className="field">
+                  <span>Stop Loss %</span>
+                  <input
+                    type="number"
+                    min="0"
+                    step="0.1"
+                    placeholder="Disabled"
+                    value={backtestForm.stopLossPct}
+                    onChange={(e) => setBacktestForm({ ...backtestForm, stopLossPct: e.target.value })}
+                  />
+                </label>
+                <label className="field">
+                  <span>Take Profit %</span>
+                  <input
+                    type="number"
+                    min="0"
+                    step="0.1"
+                    placeholder="Disabled"
+                    value={backtestForm.takeProfitPct}
+                    onChange={(e) => setBacktestForm({ ...backtestForm, takeProfitPct: e.target.value })}
                   />
                 </label>
               </div>
