@@ -353,7 +353,7 @@ Add to `BackEnd/tests/test_strategy_executor.py`:
 def test_execute_trades_allow_short_false_ignores_negative_signal_when_flat():
     closes = [100, 100, 90]
     df = make_price_df(closes)
-    df["signal"] = [0, -1, 1]
+    df["signal"] = [0, -1, 0]
     executor = make_executor()
 
     trades, equity_curve = executor._execute_trades(
