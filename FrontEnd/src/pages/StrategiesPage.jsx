@@ -31,6 +31,11 @@ export default function StrategiesPage() {
     endDate: '2024-01-01',
     initialCapital: 10000,
   });
+  const [backtestMode, setBacktestMode] = useState('single');
+  const [portfolioRows, setPortfolioRows] = useState([
+    { ticker: '', weight: 50 },
+    { ticker: '', weight: 50 },
+  ]);
   const [backtestLoading, setBacktestLoading] = useState(false);
   const [tickers, setTickers] = useState([]);
   const [tickersLoading, setTickersLoading] = useState(true);
@@ -98,6 +103,20 @@ export default function StrategiesPage() {
     return strategies.filter((s) => String(s.project_id) === String(projectId));
   }, [strategies, projectId]);
 
+  const updatePortfolioRow = (index, field, value) => {
+    setPortfolioRows((prev) => prev.map((row, i) => (i === index ? { ...row, [field]: value } : row)));
+  };
+
+  const addPortfolioRow = () => {
+    setPortfolioRows((prev) => [...prev, { ticker: '', weight: 0 }]);
+  };
+
+  const removePortfolioRow = (index) => {
+    setPortfolioRows((prev) => prev.filter((_, i) => i !== index));
+  };
+
+  const validPortfolioRows = portfolioRows.filter((r) => r.ticker && Number(r.weight) > 0);
+
   const handleSaveStrategy = async (strategyConfig) => {
     setError('');
     try {
@@ -128,13 +147,23 @@ export default function StrategiesPage() {
     setBacktestLoading(true);
     setError('');
     try {
-      await backtestApi.runBacktest(
-        selectedStrategyId,
-        backtestForm.ticker,
-        backtestForm.startDate,
-        backtestForm.endDate,
-        backtestForm.initialCapital
-      );
+      if (backtestMode === 'portfolio') {
+        await backtestApi.runPortfolioBacktest(
+          selectedStrategyId,
+          validPortfolioRows.map((r) => ({ ticker: r.ticker, weight: Number(r.weight) })),
+          backtestForm.startDate,
+          backtestForm.endDate,
+          backtestForm.initialCapital
+        );
+      } else {
+        await backtestApi.runBacktest(
+          selectedStrategyId,
+          backtestForm.ticker,
+          backtestForm.startDate,
+          backtestForm.endDate,
+          backtestForm.initialCapital
+        );
+      }
       // Redirect to results page
       window.location.href = `/strategies/${selectedStrategyId}/backtest`;
     } catch (err) {
@@ -217,6 +246,23 @@ export default function StrategiesPage() {
           <div className="card" style={{ marginTop: '20px' }}>
             <h3>Run Backtest</h3>
             <form className="stack" onSubmit={handleRunBacktest}>
+              <div className="title-row" style={{ marginBottom: '8px' }}>
+                <button
+                  type="button"
+                  className={backtestMode === 'single' ? 'primary-btn' : 'ghost-btn'}
+                  onClick={() => setBacktestMode('single')}
+                >
+                  Single ticker
+                </button>
+                <button
+                  type="button"
+                  className={backtestMode === 'portfolio' ? 'primary-btn' : 'ghost-btn'}
+                  onClick={() => setBacktestMode('portfolio')}
+                >
+                  Portfolio
+                </button>
+              </div>
+
               <div className="layout two-cols">
                 <label className="field">
                   <span>Select Strategy</span>
@@ -230,36 +276,40 @@ export default function StrategiesPage() {
                     ))}
                   </select>
                 </label>
-                <label className="field">
-                  <span>Ticker</span>
-                  <select
-                    value={backtestForm.ticker}
-                    onChange={(e) => setBacktestForm({ ...backtestForm, ticker: e.target.value })}
-                    disabled={tickersLoading || !tickers.length}
-                  >
-                    {!tickers.length && (
-                      <option value="">
-                        {tickersLoading ? 'Loading tickers...' : 'No market data uploaded yet'}
-                      </option>
+
+                {backtestMode === 'single' && (
+                  <label className="field">
+                    <span>Ticker</span>
+                    <select
+                      value={backtestForm.ticker}
+                      onChange={(e) => setBacktestForm({ ...backtestForm, ticker: e.target.value })}
+                      disabled={tickersLoading || !tickers.length}
+                    >
+                      {!tickers.length && (
+                        <option value="">
+                          {tickersLoading ? 'Loading tickers...' : 'No market data uploaded yet'}
+                        </option>
+                      )}
+                      {tickers.map((t) => (
+                        <option key={t} value={t}>{t}</option>
+                      ))}
+                    </select>
+                    {tickerRange && (
+                      <span className="muted" style={{ fontSize: '0.8em' }}>
+                        Data available {toDateInputValue(tickerRange.start_date)} to {toDateInputValue(tickerRange.end_date)}
+                        {' '}({tickerRange.count} bars)
+                      </span>
                     )}
-                    {tickers.map((t) => (
-                      <option key={t} value={t}>{t}</option>
-                    ))}
-                  </select>
-                  {tickerRange && (
-                    <span className="muted" style={{ fontSize: '0.8em' }}>
-                      Data available {toDateInputValue(tickerRange.start_date)} to {toDateInputValue(tickerRange.end_date)}
-                      {' '}({tickerRange.count} bars)
-                    </span>
-                  )}
-                </label>
+                  </label>
+                )}
+
                 <label className="field">
                   <span>Start Date</span>
                   <input
                     type="date"
                     value={backtestForm.startDate}
-                    min={tickerRange ? toDateInputValue(tickerRange.start_date) : undefined}
-                    max={tickerRange ? toDateInputValue(tickerRange.end_date) : undefined}
+                    min={backtestMode === 'single' && tickerRange ? toDateInputValue(tickerRange.start_date) : undefined}
+                    max={backtestMode === 'single' && tickerRange ? toDateInputValue(tickerRange.end_date) : undefined}
                     onChange={(e) => setBacktestForm({ ...backtestForm, startDate: e.target.value })}
                   />
                 </label>
@@ -268,8 +318,8 @@ export default function StrategiesPage() {
                   <input
                     type="date"
                     value={backtestForm.endDate}
-                    min={tickerRange ? toDateInputValue(tickerRange.start_date) : undefined}
-                    max={tickerRange ? toDateInputValue(tickerRange.end_date) : undefined}
+                    min={backtestMode === 'single' && tickerRange ? toDateInputValue(tickerRange.start_date) : undefined}
+                    max={backtestMode === 'single' && tickerRange ? toDateInputValue(tickerRange.end_date) : undefined}
                     onChange={(e) => setBacktestForm({ ...backtestForm, endDate: e.target.value })}
                   />
                 </label>
@@ -282,7 +332,61 @@ export default function StrategiesPage() {
                   />
                 </label>
               </div>
-              <button className="primary-btn" type="submit" disabled={backtestLoading || !selectedStrategyId || !backtestForm.ticker}>
+
+              {backtestMode === 'portfolio' && (
+                <div className="stack" style={{ marginTop: '8px' }}>
+                  <span className="muted" style={{ fontSize: '0.85em' }}>
+                    Weights are relative — they don't need to sum to 100 (e.g. 2 and 1 splits 66/33).
+                  </span>
+                  {portfolioRows.map((row, index) => (
+                    <div key={index} className="layout two-cols" style={{ alignItems: 'end' }}>
+                      <label className="field">
+                        <span>Ticker</span>
+                        <select
+                          value={row.ticker}
+                          onChange={(e) => updatePortfolioRow(index, 'ticker', e.target.value)}
+                          disabled={tickersLoading || !tickers.length}
+                        >
+                          <option value="">Choose a ticker...</option>
+                          {tickers.map((t) => (
+                            <option key={t} value={t}>{t}</option>
+                          ))}
+                        </select>
+                      </label>
+                      <label className="field">
+                        <span>Weight</span>
+                        <input
+                          type="number"
+                          min="0"
+                          value={row.weight}
+                          onChange={(e) => updatePortfolioRow(index, 'weight', e.target.value)}
+                        />
+                      </label>
+                      <button
+                        type="button"
+                        className="ghost-btn"
+                        onClick={() => removePortfolioRow(index)}
+                        disabled={portfolioRows.length <= 2}
+                      >
+                        Remove
+                      </button>
+                    </div>
+                  ))}
+                  <button type="button" className="ghost-btn" onClick={addPortfolioRow}>
+                    Add ticker
+                  </button>
+                </div>
+              )}
+
+              <button
+                className="primary-btn"
+                type="submit"
+                disabled={
+                  backtestLoading ||
+                  !selectedStrategyId ||
+                  (backtestMode === 'single' ? !backtestForm.ticker : validPortfolioRows.length < 2)
+                }
+              >
                 {backtestLoading ? 'Running...' : 'Run Backtest'}
               </button>
             </form>
