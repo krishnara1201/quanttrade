@@ -274,6 +274,66 @@ async def test_run_portfolio_backtest_allocates_and_aggregates(session_factory, 
 
 
 @pytest.mark.asyncio
+async def test_run_portfolio_backtest_raises_value_error_when_no_bars_in_requested_range(session_factory):
+    """A ticker's global min/max can satisfy _check_ticker_coverage while the
+    requested window still contains zero bars for that ticker (bars only at
+    the endpoints, none in between). The per-ticker MarketData query then
+    returns an empty result set, and building a DataFrame from it must not
+    reach `df.set_index("date", ...)` and blow up with an uncaught KeyError —
+    it should surface as a clean ValueError (-> HTTP 400) instead."""
+    async with session_factory() as db:
+        user = User(name="Ada", email="ada@example.com", password_hash="x")
+        db.add(user)
+        await db.flush()
+        project = Project(name="proj", owner_id=user.id)
+        db.add(project)
+        await db.flush()
+        strategy = Strategy(
+            name="strat",
+            project_id=project.id,
+            parameters=json.dumps({
+                "name": "strat",
+                "parameters": {},
+                "rules": {"entry": "close > 0", "exit": "close < 0"},
+            }),
+        )
+        db.add(strategy)
+        await db.flush()
+
+        # AAPL: bars only on the 1st and 10th -- global min/max covers
+        # 2024-01-03..2024-01-07, but there are zero bars strictly inside it.
+        db.add(MarketData(
+            ticker="AAPL", date=datetime(2024, 1, 1), open="100", high="100",
+            low="100", close="100", volume="1000",
+        ))
+        db.add(MarketData(
+            ticker="AAPL", date=datetime(2024, 1, 10), open="105", high="105",
+            low="105", close="105", volume="1000",
+        ))
+        # MSFT: normal daily bars spanning the same window.
+        for i in range(1, 11):
+            db.add(MarketData(
+                ticker="MSFT", date=datetime(2024, 1, i), open="200", high="200",
+                low="200", close="200", volume="1000",
+            ))
+        await db.commit()
+
+        user_id, strategy_id = user.id, strategy.id
+
+    async with session_factory() as db:
+        user = await _reload_user(session_factory, user_id)
+        with pytest.raises(ValueError, match="AAPL") as exc_info:
+            await portfolio_backtest_service.run_portfolio_backtest(
+                strategy_id,
+                [{"ticker": "AAPL", "weight": 1}, {"ticker": "MSFT", "weight": 1}],
+                "2024-01-03", "2024-01-07",
+                10000.0, 0.1, 0.05,
+                db, user,
+            )
+        assert not isinstance(exc_info.value, KeyError)
+
+
+@pytest.mark.asyncio
 async def test_run_portfolio_backtest_rejects_insufficient_coverage(session_factory, portfolio_seeded):
     async with session_factory() as db:
         user = await _reload_user(session_factory, portfolio_seeded["user_id"])

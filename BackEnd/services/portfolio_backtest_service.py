@@ -176,6 +176,8 @@ async def run_portfolio_backtest(
             ).order_by(MarketData.date)
         )
         rows = data_result.scalars().all()
+        if not rows:
+            raise ValueError(f"No market data found for {ticker} between {start_dt.date()} and {end_dt.date()}")
         df = pd.DataFrame([
             {
                 "date": r.date, "open": float(r.open), "high": float(r.high),

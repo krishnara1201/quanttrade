@@ -208,7 +208,8 @@ export default function BacktestResultsPage() {
           <BacktestChart
             data={(selectedResult.equity_curve || []).map((p) => ({ date: p.date, close: p.equity, signal: 0 }))}
             trades={[]}
-            equityCurve={selectedResult.equity_curve}
+            equityCurve={[]}
+            priceName="Portfolio Equity"
           />
         </div>
       )}
