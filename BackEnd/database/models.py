@@ -1,5 +1,5 @@
 from sqlalchemy import (
-    Column, Integer, String, DateTime, Text, ForeignKey, UniqueConstraint, Index, Boolean, JSON
+    Column, Integer, String, DateTime, Text, ForeignKey, UniqueConstraint, Index, Boolean, JSON, Float
 )
 from sqlalchemy.orm import declarative_base, relationship
 from datetime import datetime
@@ -41,6 +41,7 @@ class Strategy(Base):
     status = Column(String, default="draft")  # e.g. active, inactive, backtesting
     is_public = Column(Boolean, default=False)  # visibility
     backtests = relationship("BacktestResult", back_populates="strategy", cascade="all, delete-orphan")
+    portfolio_backtests = relationship("PortfolioBacktestResult", back_populates="strategy", cascade="all, delete-orphan")
     
 class MarketData(Base):
     __tablename__ = "market_data"
@@ -71,4 +72,21 @@ class BacktestResult(Base):
     signals = Column(JSON, default=[])  # Per-bar {date, close, signal} series for charting
     equity_curve = Column(JSON, default=[])  # Per-bar {date, equity} mark-to-market series
     logs = Column(Text, default='')  # Optional logs or error messages
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class PortfolioBacktestResult(Base):
+    __tablename__ = "portfolio_backtest_results"
+    id = Column(Integer, primary_key=True)
+    strategy_id = Column(Integer, ForeignKey("strategies.id"), nullable=False)
+    strategy = relationship("Strategy", back_populates="portfolio_backtests")
+    start_date = Column(DateTime, nullable=False)
+    end_date = Column(DateTime, nullable=False)
+    initial_capital = Column(Float, nullable=False)
+    commission_pct = Column(Float, nullable=False)
+    slippage_pct = Column(Float, nullable=False)
+    allocations = Column(JSON, default=[])   # [{ticker, weight}] — normalized weights actually used
+    results = Column(JSON, default={})       # aggregate portfolio metrics
+    equity_curve = Column(JSON, default=[])  # aggregate portfolio {date, equity} series
+    per_ticker = Column(JSON, default={})    # {ticker: {allocated_capital, metrics, trades, signals, equity_curve}}
     created_at = Column(DateTime, default=datetime.utcnow)

@@ -1,5 +1,5 @@
-from typing import Optional
-from fastapi import APIRouter, Depends
+from typing import List, Optional
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
@@ -8,6 +8,9 @@ from database.models import User, Strategy, BacktestResult
 from database.connection import get_db
 from services.auth_service import get_current_user
 from services.backtest_service import run_backtest, get_backtest_results
+from services.portfolio_backtest_service import (
+    run_portfolio_backtest, get_portfolio_backtest_results, get_portfolio_backtest_detail,
+)
 from datetime import datetime
 
 router = APIRouter(prefix="/api/backtest", tags=["backtest"])
@@ -15,6 +18,19 @@ router = APIRouter(prefix="/api/backtest", tags=["backtest"])
 class BacktestRequest(BaseModel):
     strategy_id: int
     ticker: str
+    start_date: str
+    end_date: str
+    initial_capital: float = 10000.0
+    commission_pct: float = 0.1
+    slippage_pct: float = 0.05
+
+class PortfolioTickerWeight(BaseModel):
+    ticker: str
+    weight: float
+
+class PortfolioBacktestRequest(BaseModel):
+    strategy_id: int
+    tickers: List[PortfolioTickerWeight]
     start_date: str
     end_date: str
     initial_capital: float = 10000.0
@@ -64,15 +80,13 @@ async def get_backtest_detail(
     backtest = result.scalars().first()
     
     if not backtest:
-        from fastapi import HTTPException
         raise HTTPException(status_code=404, detail="Backtest not found")
-    
+
     # Verify ownership
     strategy = backtest.strategy
     if strategy.project.owner_id != user.id:
-        from fastapi import HTTPException
         raise HTTPException(status_code=403, detail="Unauthorized")
-    
+
     return {
         'id': backtest.id,
         'strategy_id': backtest.strategy_id,
@@ -82,3 +96,53 @@ async def get_backtest_detail(
         'equity_curve': backtest.equity_curve,
         'created_at': backtest.created_at.isoformat(),
     }
+
+@router.post("/run-portfolio")
+async def run_portfolio_backtest_endpoint(
+    req: PortfolioBacktestRequest,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user)
+):
+    """Run a portfolio backtest: one strategy across a basket of tickers,
+    each funded from a custom fixed weight of initial_capital."""
+    try:
+        return await run_portfolio_backtest(
+            req.strategy_id,
+            [t.model_dump() for t in req.tickers],
+            req.start_date,
+            req.end_date,
+            req.initial_capital,
+            req.commission_pct,
+            req.slippage_pct,
+            db,
+            user,
+        )
+    except ValueError as e:
+        status_code = 403 if str(e) == "Unauthorized" else (404 if "not found" in str(e) else 400)
+        raise HTTPException(status_code=status_code, detail=str(e))
+
+@router.get("/portfolio/results/{strategy_id}")
+async def get_portfolio_backtest_results_endpoint(
+    strategy_id: int,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user)
+):
+    """Get all portfolio backtest results for a strategy"""
+    try:
+        return await get_portfolio_backtest_results(strategy_id, db, user)
+    except ValueError as e:
+        status_code = 403 if str(e) == "Unauthorized" else (404 if "not found" in str(e) else 400)
+        raise HTTPException(status_code=status_code, detail=str(e))
+
+@router.get("/portfolio/{portfolio_backtest_id}")
+async def get_portfolio_backtest_detail_endpoint(
+    portfolio_backtest_id: int,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user)
+):
+    """Get detailed portfolio backtest results, including per-ticker breakdown"""
+    try:
+        return await get_portfolio_backtest_detail(portfolio_backtest_id, db, user)
+    except ValueError as e:
+        status_code = 403 if str(e) == "Unauthorized" else (404 if "not found" in str(e) else 400)
+        raise HTTPException(status_code=status_code, detail=str(e))

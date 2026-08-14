@@ -8,7 +8,7 @@ function formatDateTick(value) {
   return typeof value === 'string' ? value.split('T')[0] : value;
 }
 
-export default function BacktestChart({ data, trades, equityCurve }) {
+export default function BacktestChart({ data, trades, equityCurve, priceName = 'Stock Price' }) {
   if (!data || data.length === 0) {
     return <p className="muted">No data to display</p>;
   }
@@ -62,7 +62,7 @@ export default function BacktestChart({ data, trades, equityCurve }) {
             type="monotone"
             dataKey="close"
             stroke="#5da2ff"
-            name="Stock Price"
+            name={priceName}
             dot={false}
             isAnimationActive={false}
           />
