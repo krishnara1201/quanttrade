@@ -9,13 +9,24 @@ function toDateInputValue(isoString) {
   return isoString ? isoString.slice(0, 10) : '';
 }
 
-function clampDate(value, minIso, maxIso) {
+function clampDateRange(startValue, endValue, minIso, maxIso) {
   const min = toDateInputValue(minIso);
   const max = toDateInputValue(maxIso);
-  if (!value) return min || value;
-  if (min && value < min) return min;
-  if (max && value > max) return max;
-  return value;
+  if (!min && !max) return { start: startValue, end: endValue };
+
+  // If the previously selected window doesn't overlap the ticker's range at
+  // all, clamping each end independently would collapse both onto the same
+  // boundary (e.g. both pinned to `max`), leaving start === end. Fall back
+  // to the ticker's full range instead.
+  if ((min && (!endValue || endValue < min)) || (max && (!startValue || startValue > max))) {
+    return { start: min || startValue, end: max || endValue };
+  }
+
+  let start = startValue;
+  let end = endValue;
+  if (min && start < min) start = min;
+  if (max && end > max) end = max;
+  return { start, end };
 }
 
 export default function StrategiesPage() {
@@ -85,11 +96,10 @@ export default function StrategiesPage() {
       .then((range) => {
         if (cancelled) return;
         setTickerRange(range);
-        setBacktestForm((prev) => ({
-          ...prev,
-          startDate: clampDate(prev.startDate, range.start_date, range.end_date),
-          endDate: clampDate(prev.endDate, range.start_date, range.end_date),
-        }));
+        setBacktestForm((prev) => {
+          const { start, end } = clampDateRange(prev.startDate, prev.endDate, range.start_date, range.end_date);
+          return { ...prev, startDate: start, endDate: end };
+        });
       })
       .catch(() => {
         if (!cancelled) setTickerRange(null);
