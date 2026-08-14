@@ -15,6 +15,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from database.models import MarketData
+from services.strategy_executor import max_drawdown_pct, sharpe_ratio
 
 
 def normalize_weights(tickers: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -88,3 +89,34 @@ def aggregate_equity_curves(
             total += last_known[ticker]
         portfolio_curve.append({"date": date, "equity": total})
     return portfolio_curve
+
+
+def aggregate_portfolio_metrics(
+    per_ticker_results: Dict[str, Dict[str, Any]],
+    portfolio_equity_curve: List[Dict[str, Any]],
+    initial_capital: float,
+) -> Dict[str, Any]:
+    """Pool trades and equity across all tickers in the basket into one set
+    of portfolio-level metrics, using the same field names as a single-ticker
+    backtest's metrics so the frontend can render either with one component."""
+    all_trades = [
+        trade for result in per_ticker_results.values() for trade in result["trades"]
+    ]
+
+    final_capital = portfolio_equity_curve[-1]["equity"] if portfolio_equity_curve else initial_capital
+    total_return = final_capital - initial_capital
+    return_pct = (total_return / initial_capital) * 100 if initial_capital else 0.0
+
+    exits = [t for t in all_trades if t["type"] == "exit"]
+    wins = len([t for t in exits if t.get("pnl", 0) > 0])
+    win_rate = (wins / len(exits) * 100) if exits else 0.0
+
+    return {
+        "total_return": float(total_return),
+        "return_pct": float(return_pct),
+        "final_capital": float(final_capital),
+        "win_rate": float(win_rate),
+        "num_trades": len(exits),
+        "max_drawdown_pct": max_drawdown_pct(portfolio_equity_curve),
+        "sharpe_ratio": sharpe_ratio(portfolio_equity_curve),
+    }

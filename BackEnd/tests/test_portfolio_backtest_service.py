@@ -11,7 +11,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
 
 from database.models import Base, User, Project, Strategy, PortfolioBacktestResult, MarketData
-from services.portfolio_backtest_service import normalize_weights, _check_ticker_coverage, aggregate_equity_curves
+from services.portfolio_backtest_service import normalize_weights, _check_ticker_coverage, aggregate_equity_curves, aggregate_portfolio_metrics
 
 
 @pytest_asyncio.fixture
@@ -164,3 +164,36 @@ def test_aggregate_equity_curves_uses_allocated_capital_before_first_point():
         {"date": "d1", "equity": 300.0},  # AAPL 100 + MSFT's uninvested 200
         {"date": "d2", "equity": 315.0},
     ]
+
+
+def test_aggregate_portfolio_metrics_pools_trades_across_tickers():
+    per_ticker_results = {
+        "AAPL": {"trades": [
+            {"type": "entry", "price": 100, "date": "d1", "size": 1},
+            {"type": "exit", "price": 110, "date": "d2", "size": 1, "pnl": 10.0},
+        ]},
+        "MSFT": {"trades": [
+            {"type": "entry", "price": 200, "date": "d1", "size": 1},
+            {"type": "exit", "price": 190, "date": "d2", "size": 1, "pnl": -10.0},
+        ]},
+    }
+    portfolio_equity_curve = [
+        {"date": "d1", "equity": 1000.0},
+        {"date": "d2", "equity": 1000.0},
+    ]
+    metrics = aggregate_portfolio_metrics(per_ticker_results, portfolio_equity_curve, 1000.0)
+
+    assert metrics["num_trades"] == 2
+    assert metrics["win_rate"] == pytest.approx(50.0)
+    assert metrics["final_capital"] == pytest.approx(1000.0)
+    assert metrics["total_return"] == pytest.approx(0.0)
+    assert metrics["return_pct"] == pytest.approx(0.0)
+    assert "max_drawdown_pct" in metrics
+    assert "sharpe_ratio" in metrics
+
+
+def test_aggregate_portfolio_metrics_handles_no_trades():
+    portfolio_equity_curve = [{"date": "d1", "equity": 1000.0}]
+    metrics = aggregate_portfolio_metrics({"AAPL": {"trades": []}}, portfolio_equity_curve, 1000.0)
+    assert metrics["num_trades"] == 0
+    assert metrics["win_rate"] == 0.0
