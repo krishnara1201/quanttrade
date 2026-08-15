@@ -3,6 +3,7 @@ from datetime import datetime, timedelta
 
 import bcrypt
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from fastapi.responses import JSONResponse
 from fastapi.security import OAuth2PasswordRequestForm
 from jose import jwt as jose_jwt
 from pydantic import BaseModel, EmailStr
@@ -152,26 +153,40 @@ async def refresh_access_token(
     db: AsyncSession = Depends(get_db),
     _rate_limit: None = Depends(_check_login_ip_rate_limit),
 ):
+    # NOTE: on every failure branch below we return a JSONResponse (with
+    # _clear_refresh_cookie applied to THAT response object) rather than
+    # raising HTTPException. FastAPI/Starlette discards a Response
+    # parameter's header mutations when the endpoint raises — the
+    # exception handler builds a brand-new response, so a Set-Cookie
+    # clear applied to the injected `response` object before raising
+    # never reaches the client. Returning the response directly is the
+    # only way the cookie-clear actually reaches the client. See the
+    # "Auth" section of CLAUDE.md for the full explanation.
     raw_token = request.cookies.get(REFRESH_COOKIE_NAME)
     if not raw_token:
-        raise HTTPException(status_code=401, detail="No refresh token provided")
+        error_response = JSONResponse(status_code=401, content={"detail": "No refresh token provided"})
+        _clear_refresh_cookie(error_response)
+        return error_response
 
     try:
         new_raw_token, record = await refresh_token_service.rotate_refresh_token(
             db, raw_token, REFRESH_TOKEN_EXPIRE_DAYS
         )
     except refresh_token_service.RefreshTokenReuseDetected:
-        _clear_refresh_cookie(response)
-        raise HTTPException(status_code=401, detail="Session invalidated, please log in again")
+        error_response = JSONResponse(status_code=401, content={"detail": "Session invalidated, please log in again"})
+        _clear_refresh_cookie(error_response)
+        return error_response
     except ValueError:
-        _clear_refresh_cookie(response)
-        raise HTTPException(status_code=401, detail="Invalid or expired refresh token")
+        error_response = JSONResponse(status_code=401, content={"detail": "Invalid or expired refresh token"})
+        _clear_refresh_cookie(error_response)
+        return error_response
 
     result = await db.execute(select(User).where(User.id == record.user_id))
     user = result.scalars().first()
     if user is None:
-        _clear_refresh_cookie(response)
-        raise HTTPException(status_code=401, detail="Invalid refresh token")
+        error_response = JSONResponse(status_code=401, content={"detail": "Invalid refresh token"})
+        _clear_refresh_cookie(error_response)
+        return error_response
 
     token = create_access_token(user.email, user.id, timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES))
     _set_refresh_cookie(response, new_raw_token)

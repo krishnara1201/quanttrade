@@ -166,12 +166,15 @@ async def test_refresh_rotates_the_cookie_and_returns_a_new_access_token(session
 
 @pytest.mark.asyncio
 async def test_refresh_with_no_cookie_401s(session_factory):
+    # refresh_access_token returns a JSONResponse (rather than raising
+    # HTTPException) on every failure branch, since FastAPI/Starlette
+    # discards a Response parameter's header mutations when an endpoint
+    # raises — see the note in routers/auth.py's refresh_access_token.
     async with session_factory() as db:
-        with pytest.raises(HTTPException) as exc_info:
-            await auth_router.refresh_access_token(
-                request=FakeRequest(cookies={}, path="/api/auth/refresh"), response=Response(), db=db,
-            )
-    assert exc_info.value.status_code == 401
+        result = await auth_router.refresh_access_token(
+            request=FakeRequest(cookies={}, path="/api/auth/refresh"), response=Response(), db=db,
+        )
+    assert result.status_code == 401
 
 
 @pytest.mark.asyncio
@@ -190,15 +193,13 @@ async def test_replaying_a_rotated_refresh_token_401s_and_clears_the_cookie(sess
             response=Response(), db=db,
         )
 
-    replay_response = Response()
     async with session_factory() as db:
-        with pytest.raises(HTTPException) as exc_info:
-            await auth_router.refresh_access_token(
-                request=FakeRequest(cookies={"refresh_token": raw_refresh_token}, path="/api/auth/refresh"),
-                response=replay_response, db=db,
-            )
-    assert exc_info.value.status_code == 401
-    assert any(key == b"set-cookie" for key, _ in replay_response.raw_headers)
+        replay_result = await auth_router.refresh_access_token(
+            request=FakeRequest(cookies={"refresh_token": raw_refresh_token}, path="/api/auth/refresh"),
+            response=Response(), db=db,
+        )
+    assert replay_result.status_code == 401
+    assert any(key == b"set-cookie" for key, _ in replay_result.raw_headers)
 
 
 @pytest.mark.asyncio
@@ -220,12 +221,11 @@ async def test_logout_revokes_the_refresh_token_and_clears_the_cookie(session_fa
     assert any(key == b"set-cookie" for key, _ in logout_response.raw_headers)
 
     async with session_factory() as db:
-        with pytest.raises(HTTPException) as exc_info:
-            await auth_router.refresh_access_token(
-                request=FakeRequest(cookies={"refresh_token": raw_refresh_token}, path="/api/auth/refresh"),
-                response=Response(), db=db,
-            )
-    assert exc_info.value.status_code == 401
+        result = await auth_router.refresh_access_token(
+            request=FakeRequest(cookies={"refresh_token": raw_refresh_token}, path="/api/auth/refresh"),
+            response=Response(), db=db,
+        )
+    assert result.status_code == 401
 
 
 def test_ip_rate_limiter_allows_requests_up_to_the_limit():
