@@ -624,3 +624,29 @@ async def test_execute_portfolio_backtest_passes_allow_short_and_stop_loss_take_
         assert kwargs["allow_short"] is True
         assert kwargs["stop_loss_pct"] == 2.5
         assert kwargs["take_profit_pct"] == 5.0
+
+
+@pytest.mark.asyncio
+async def test_execute_portfolio_backtest_persists_benchmark_equity_curve(session_factory, portfolio_seeded):
+    async with session_factory() as db:
+        record = await portfolio_backtest_service.create_pending_portfolio_backtest(
+            portfolio_seeded["strategy_id"],
+            [{"ticker": "AAPL", "weight": 1}, {"ticker": "MSFT", "weight": 1}],
+            "2024-01-01", "2024-01-05", 10000.0, 0.1, 0.05,
+            db, await _reload_user(session_factory, portfolio_seeded["user_id"]),
+        )
+        await portfolio_backtest_service.execute_portfolio_backtest(record.id, db)
+
+    async with session_factory() as db:
+        result = await db.execute(
+            select(PortfolioBacktestResult).where(PortfolioBacktestResult.id == record.id)
+        )
+        loaded = result.scalars().first()
+
+    # AAPL flat at 100 (sub_capital 5000 -> 50 shares), MSFT flat at 200
+    # (sub_capital 5000 -> 25 shares) -> combined benchmark stays flat at
+    # 10000 the whole period (both tickers flat-priced, per portfolio_seeded).
+    assert loaded.status == "success"
+    assert len(loaded.benchmark_equity_curve) == 5
+    for point in loaded.benchmark_equity_curve:
+        assert point["equity"] == pytest.approx(10000.0)

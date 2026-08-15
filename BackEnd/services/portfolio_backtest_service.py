@@ -17,7 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from database.models import MarketData, PortfolioBacktestResult, Strategy, User
-from services.strategy_executor import StrategyExecutor, max_drawdown_pct, sharpe_ratio
+from services.strategy_executor import StrategyExecutor, benchmark_equity_curve, max_drawdown_pct, sharpe_ratio
 
 
 def normalize_weights(tickers: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -209,6 +209,7 @@ async def execute_portfolio_backtest(portfolio_backtest_id: int, db: AsyncSessio
         strategy = record.strategy
         per_ticker_results: Dict[str, Any] = {}
         allocated_capital: Dict[str, float] = {}
+        per_ticker_benchmark_curves: Dict[str, List[Dict[str, Any]]] = {}
 
         for alloc in record.allocations:
             ticker = alloc["ticker"]
@@ -248,11 +249,13 @@ async def execute_portfolio_backtest(portfolio_backtest_id: int, db: AsyncSessio
                 raise ValueError(f"Backtest execution failed for {ticker}: {str(e)}")
 
             per_ticker_results[ticker] = {**ticker_result, "allocated_capital": sub_capital}
+            per_ticker_benchmark_curves[ticker] = benchmark_equity_curve(df, sub_capital)
 
         portfolio_equity_curve = aggregate_equity_curves(
             {t: r["equity_curve"] for t, r in per_ticker_results.items()},
             allocated_capital,
         )
+        benchmark_curve = aggregate_equity_curves(per_ticker_benchmark_curves, allocated_capital)
         metrics = aggregate_portfolio_metrics(per_ticker_results, portfolio_equity_curve, record.initial_capital)
     except Exception as e:
         await db.rollback()
@@ -263,6 +266,7 @@ async def execute_portfolio_backtest(portfolio_backtest_id: int, db: AsyncSessio
 
     record.results = metrics
     record.equity_curve = portfolio_equity_curve
+    record.benchmark_equity_curve = benchmark_curve
     record.per_ticker = per_ticker_results
     record.status = "success"
     await db.commit()
@@ -317,6 +321,7 @@ async def get_portfolio_backtest_detail(portfolio_backtest_id: int, db: AsyncSes
         "error_message": record.error_message,
         "metrics": record.results,
         "equity_curve": record.equity_curve,
+        "benchmark_equity_curve": record.benchmark_equity_curve,
         "per_ticker": record.per_ticker,
         "created_at": record.created_at.isoformat(),
     }
