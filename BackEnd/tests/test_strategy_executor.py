@@ -486,3 +486,21 @@ def test_backtest_passes_allow_short_and_stop_loss_take_profit_through_to_execut
     assert any(
         t['type'] == 'entry' and t['direction'] == 'short' for t in result['trades']
     )
+
+
+def test_benchmark_equity_curve_buys_and_holds():
+    from services.strategy_executor import benchmark_equity_curve
+    df = make_price_df([100, 110, 90, 120])
+    curve = benchmark_equity_curve(df, initial_capital=1000.0)
+    assert len(curve) == 4
+    assert curve[0]["equity"] == pytest.approx(1000.0)
+    assert curve[1]["equity"] == pytest.approx(1100.0)
+    assert curve[2]["equity"] == pytest.approx(900.0)
+    assert curve[3]["equity"] == pytest.approx(1200.0)
+    assert curve[0]["date"] == df.index[0].isoformat()
+
+
+def test_benchmark_equity_curve_empty_df_returns_empty_list():
+    from services.strategy_executor import benchmark_equity_curve
+    empty = make_price_df([])
+    assert benchmark_equity_curve(empty, initial_capital=1000.0) == []

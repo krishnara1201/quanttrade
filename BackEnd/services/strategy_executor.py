@@ -74,27 +74,7 @@ class StrategyExecutor:
         self.validate()
 
         df = df.copy()
-        mode = self.config.get('mode', 'rules')
-
-        if mode == 'custom_code':
-            from services.sandbox_executor import run_custom_strategy, SandboxError
-            try:
-                df['signal'] = run_custom_strategy(self.code, df)
-            except SandboxError as e:
-                raise ValueError(str(e))
-        else:
-            params = self.config.get('parameters', {})
-            rules = self.config.get('rules', {})
-
-            self._calculate_indicators(df, params)
-
-            df['signal'] = 0
-
-            for i in range(1, len(df)):
-                if self._evaluate_condition(rules['entry'], df, i):
-                    df.iloc[i, df.columns.get_loc('signal')] = 1
-                elif self._evaluate_condition(rules['exit'], df, i):
-                    df.iloc[i, df.columns.get_loc('signal')] = -1
+        df['signal'] = self.generate_signals(df)
 
         trades, equity_curve = self._execute_trades(
             df, initial_capital, commission_pct, slippage_pct,
@@ -117,6 +97,40 @@ class StrategyExecutor:
             'signals': signals,
             'equity_curve': equity_curve,
         }
+
+    def generate_signals(self, df: pd.DataFrame) -> pd.Series:
+        """Compute the per-bar {1, -1, 0} signal Series for `df` — either the
+        rules-mode indicator calculation + condition evaluation, or a
+        custom-code sandbox call — without executing trades or computing
+        metrics. This is the reusable unit walk-forward evaluation calls
+        once per fold (services/walk_forward_service.py); `backtest()` above
+        calls it too, for the ordinary single-shot case.
+
+        For rules mode this mutates `df` in place by adding indicator
+        columns (e.g. 'fast_ma', 'rsi') — the same side effect
+        `_calculate_indicators` always had. Callers that need `df`
+        untouched should pass a copy.
+        """
+        mode = self.config.get('mode', 'rules')
+
+        if mode == 'custom_code':
+            from services.sandbox_executor import run_custom_strategy, SandboxError
+            try:
+                return run_custom_strategy(self.code, df)
+            except SandboxError as e:
+                raise ValueError(str(e))
+
+        params = self.config.get('parameters', {})
+        rules = self.config.get('rules', {})
+        self._calculate_indicators(df, params)
+
+        signal = pd.Series(0, index=df.index)
+        for i in range(1, len(df)):
+            if self._evaluate_condition(rules['entry'], df, i):
+                signal.iloc[i] = 1
+            elif self._evaluate_condition(rules['exit'], df, i):
+                signal.iloc[i] = -1
+        return signal
     
     def _calculate_ema(self, series: pd.Series, period: int) -> pd.Series:
         """Exponential moving average, matching pandas' standard ewm formula"""
@@ -422,3 +436,21 @@ def sharpe_ratio(equity_curve: List[Dict]) -> float:
     if not std or pd.isna(std) or std == 0:
         return 0.0
     return float((returns.mean() / std) * (252 ** 0.5))
+
+
+def benchmark_equity_curve(df: pd.DataFrame, initial_capital: float) -> List[Dict[str, Any]]:
+    """Buy-and-hold reference curve over `df`'s date range: buy as many
+    shares as `initial_capital` affords at the first bar's close, then mark
+    to market every bar. No commission/slippage modeling — this is a
+    reference line for comparison, not a tradable strategy."""
+    if df.empty:
+        return []
+    first_close = df['close'].iloc[0]
+    shares = initial_capital / first_close
+    return [
+        {
+            'date': idx.isoformat() if hasattr(idx, 'isoformat') else str(idx),
+            'equity': float(shares * close),
+        }
+        for idx, close in zip(df.index, df['close'])
+    ]
