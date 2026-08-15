@@ -6,7 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from database.connection import get_db
 from database.models import User, Strategy, MarketData, BacktestResult
 from services.auth_service import get_current_user
-from services.strategy_executor import StrategyExecutor
+from services.strategy_executor import StrategyExecutor, benchmark_equity_curve
 import pandas as pd
 from datetime import datetime
 
@@ -121,6 +121,7 @@ async def execute_backtest(backtest_result_id: int, db: AsyncSession) -> None:
             allow_short=record.allow_short, stop_loss_pct=record.stop_loss_pct,
             take_profit_pct=record.take_profit_pct,
         )
+        benchmark_curve = benchmark_equity_curve(df, record.initial_capital)
     except Exception as e:
         await db.rollback()
         record.status = "failed"
@@ -132,6 +133,7 @@ async def execute_backtest(backtest_result_id: int, db: AsyncSession) -> None:
     record.trades = backtest_results['trades']
     record.signals = backtest_results['signals']
     record.equity_curve = backtest_results['equity_curve']
+    record.benchmark_equity_curve = benchmark_curve
     record.status = "success"
     await db.commit()
 

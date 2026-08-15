@@ -269,3 +269,20 @@ async def test_execute_backtest_passes_allow_short_and_stop_loss_take_profit_to_
     assert captured["allow_short"] is True
     assert captured["stop_loss_pct"] == 2.5
     assert captured["take_profit_pct"] == 5.0
+
+
+@pytest.mark.asyncio
+async def test_execute_backtest_persists_benchmark_equity_curve(session_factory, seeded):
+    async with session_factory() as db:
+        await backtest_service.execute_backtest(seeded["backtest_id"], db)
+
+    async with session_factory() as db:
+        result = await db.execute(select(BacktestResult).where(BacktestResult.id == seeded["backtest_id"]))
+        record = result.scalars().first()
+
+    # seeded fixture: closes [10, 11, 12, 13, 14] for Jan 1-5 2024 (end_date
+    # is Jan 5), initial_capital 10000.0 -> 1000 shares bought at close=10.
+    assert record.status == "success"
+    assert len(record.benchmark_equity_curve) == 5
+    assert record.benchmark_equity_curve[0]["equity"] == pytest.approx(10000.0)
+    assert record.benchmark_equity_curve[-1]["equity"] == pytest.approx(14000.0)

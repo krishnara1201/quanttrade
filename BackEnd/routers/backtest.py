@@ -110,6 +110,7 @@ async def get_backtest_detail(
         'trades': backtest.trades,
         'signals': backtest.signals,
         'equity_curve': backtest.equity_curve,
+        'benchmark_equity_curve': backtest.benchmark_equity_curve,
         'created_at': backtest.created_at.isoformat(),
     }
 
