@@ -16,9 +16,24 @@ import json
 import sys
 
 
+# Mirrors services.sandbox_executor.ALLOWED_IMPORT_PREFIXES - kept as a
+# literal copy rather than an import so this worker has no dependency on
+# the parent package at runtime (it's invoked as a standalone script).
+_ALLOWED_IMPORT_PREFIXES = (
+    "pandas", "numpy",
+    "sklearn.linear_model", "sklearn.ensemble", "sklearn.tree",
+    "sklearn.svm", "sklearn.naive_bayes", "sklearn.neighbors",
+    "sklearn.preprocessing", "sklearn.pipeline",
+    "sklearn.model_selection", "sklearn.metrics",
+)
+
+
 def _safe_import(name, globals=None, locals=None, fromlist=(), level=0):
-    root = name.split(".")[0]
-    if root not in ("pandas", "numpy"):
+    allowed = any(
+        name == prefix or name.startswith(prefix + ".")
+        for prefix in _ALLOWED_IMPORT_PREFIXES
+    )
+    if not allowed:
         raise ImportError(f"import of {name!r} is not allowed in custom strategy code")
     return __import__(name, globals, locals, fromlist, level)
 

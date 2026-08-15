@@ -184,8 +184,17 @@ export default function StrategyBuilder({ onSave, onCancel }) {
           <p className="muted">
             Define a <code>generate_signals(df)</code> function. Available columns: <code>open</code>,{' '}
             <code>high</code>, <code>low</code>, <code>close</code>, <code>volume</code>. <code>pd</code> and{' '}
-            <code>np</code> are available; other imports aren't allowed. Code runs in a sandboxed process with a
-            resource limit and a timeout, so keep it simple and avoid unbounded loops.
+            <code>np</code> are available with no import needed. A curated set of scikit-learn submodules can also be
+            imported for ML-based strategies: <code>sklearn.linear_model</code>, <code>sklearn.ensemble</code>,{' '}
+            <code>sklearn.tree</code>, <code>sklearn.svm</code>, <code>sklearn.naive_bayes</code>,{' '}
+            <code>sklearn.neighbors</code>, <code>sklearn.preprocessing</code>, <code>sklearn.pipeline</code>,{' '}
+            <code>sklearn.model_selection</code>, and <code>sklearn.metrics</code> — import the full path, e.g.{' '}
+            <code>from sklearn.linear_model import LogisticRegression</code> (<code>from sklearn import ...</code>{' '}
+            shorthand isn't recognized). No other imports are allowed. Code runs in a single-threaded, sandboxed
+            process with a memory limit, a CPU limit, and a wall-clock timeout, so keep it simple, avoid unbounded
+            loops, and don't rely on <code>n_jobs</code> for parallelism — it's forced off to keep training inside
+            the resource limit. Watch out for look-ahead bias: fitting a model on the whole <code>df</code> before
+            predicting trains on future data, so prefer an expanding/rolling window fit.
           </p>
           <CodeEditor value={code} onChange={setCode} />
         </div>

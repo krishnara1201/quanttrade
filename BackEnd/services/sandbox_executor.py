@@ -33,18 +33,51 @@ import sys
 import tempfile
 
 import pandas as pd
+from dotenv import load_dotenv
+
+load_dotenv()
 
 _WORKER_PATH = os.path.join(os.path.dirname(__file__), "_sandbox_worker.py")
 
-DEFAULT_TIMEOUT_S = 10
-DEFAULT_MEM_LIMIT_MB = 512
-DEFAULT_CPU_LIMIT_S = 8
+DEFAULT_TIMEOUT_S = int(os.getenv("SANDBOX_TIMEOUT_S", "10"))
+DEFAULT_MEM_LIMIT_MB = int(os.getenv("SANDBOX_MEM_LIMIT_MB", "512"))
+DEFAULT_CPU_LIMIT_S = int(os.getenv("SANDBOX_CPU_LIMIT_S", "8"))
 
-ALLOWED_IMPORT_ROOTS = {"pandas", "numpy"}
+# Curated, not "import sklearn" wholesale: sklearn.datasets can hit the
+# network (fetch_openml et al.), and an unreviewed future submodule could
+# carry its own side effects. Matched by full dotted path, not just the
+# root package - see _import_is_allowed. Shared with _sandbox_worker.py's
+# _safe_import as a second, runtime-side enforcement layer.
+ALLOWED_IMPORT_PREFIXES = {
+    "pandas", "numpy",
+    "sklearn.linear_model", "sklearn.ensemble", "sklearn.tree",
+    "sklearn.svm", "sklearn.naive_bayes", "sklearn.neighbors",
+    "sklearn.preprocessing", "sklearn.pipeline",
+    "sklearn.model_selection", "sklearn.metrics",
+}
 DISALLOWED_CALL_NAMES = {
     "eval", "exec", "compile", "__import__", "open", "input",
     "globals", "locals", "vars", "exit", "quit",
 }
+
+# sklearn estimators (e.g. n_jobs=-1) can spawn worker subprocesses via
+# joblib/loky outside the parent's RLIMIT_AS/RLIMIT_CPU envelope entirely.
+# Forcing every relevant thread pool to size 1 keeps all computation inside
+# the one resource-limited process regardless of what user code requests.
+SINGLE_THREAD_ENV = {
+    "OMP_NUM_THREADS": "1",
+    "OPENBLAS_NUM_THREADS": "1",
+    "MKL_NUM_THREADS": "1",
+    "JOBLIB_MULTIPROCESSING": "0",
+    "LOKY_MAX_CPU_COUNT": "1",
+}
+
+
+def _import_is_allowed(module_name: str) -> bool:
+    return any(
+        module_name == prefix or module_name.startswith(prefix + ".")
+        for prefix in ALLOWED_IMPORT_PREFIXES
+    )
 
 
 class SandboxError(Exception):
@@ -87,8 +120,7 @@ class _SafetyVisitor(ast.NodeVisitor):
 
     def visit_Import(self, node):
         for alias in node.names:
-            root = alias.name.split(".")[0]
-            if root not in ALLOWED_IMPORT_ROOTS:
+            if not _import_is_allowed(alias.name):
                 self.violations.append({
                     "line": node.lineno,
                     "message": f"import of {alias.name!r} is not allowed",
@@ -96,11 +128,11 @@ class _SafetyVisitor(ast.NodeVisitor):
         self.generic_visit(node)
 
     def visit_ImportFrom(self, node):
-        root = (node.module or "").split(".")[0]
-        if root not in ALLOWED_IMPORT_ROOTS:
+        module = node.module or ""
+        if not _import_is_allowed(module):
             self.violations.append({
                 "line": node.lineno,
-                "message": f"import of {node.module!r} is not allowed",
+                "message": f"import of {module!r} is not allowed",
             })
         self.generic_visit(node)
 
@@ -214,6 +246,7 @@ def run_custom_strategy(
                 capture_output=True,
                 text=True,
                 preexec_fn=_limit_resources(mem_limit_mb, cpu_limit_s),
+                env={**os.environ, **SINGLE_THREAD_ENV},
             )
         except subprocess.TimeoutExpired:
             raise SandboxTimeoutError(f"Custom strategy code timed out after {timeout_s}s")
