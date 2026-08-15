@@ -8,9 +8,11 @@ from database.connection import engine, AsyncSessionLocal
 from sqlalchemy.ext.asyncio import AsyncSession
 from routers import users, projects, auth, strategies, data, backtest
 from services.rate_limiter import fixed_window
+from services.auth_service import validate_secret_key
 import threading
 import os
 load_dotenv()
+validate_secret_key()
 
 app = FastAPI()
 
