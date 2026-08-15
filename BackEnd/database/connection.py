@@ -9,7 +9,6 @@ import sys
 from functools import wraps
 import bcrypt
 from datetime import datetime
-from database.models import Base
 
 load_dotenv()
 DATABASE_URL = os.getenv(
@@ -18,12 +17,6 @@ DATABASE_URL = os.getenv(
 conn = None   # PostgreSQL connection object
 engine = create_async_engine(DATABASE_URL, echo=True, pool_pre_ping=True)
 AsyncSessionLocal = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
-
-
-async def init_db():
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-    print("Database tables created")
 
 
 async def get_db() -> AsyncSession:

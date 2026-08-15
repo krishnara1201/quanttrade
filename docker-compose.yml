@@ -55,7 +55,7 @@ services:
     volumes:
       - ./BackEnd:/app
       - /app/.venv
-    command: uv run python -m celery -A tasks.celery_app worker --loglevel=info --concurrency=2
+    command: sh -c "uv run alembic upgrade head && uv run python -m celery -A tasks.celery_app worker --loglevel=info --concurrency=2"
     depends_on:
       postgres:
         condition: service_healthy

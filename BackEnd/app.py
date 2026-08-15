@@ -4,7 +4,7 @@ from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
 from database.models import Project, User
-from database.connection import engine, Base, init_db, AsyncSessionLocal
+from database.connection import engine, AsyncSessionLocal
 from sqlalchemy.ext.asyncio import AsyncSession
 from routers import users, projects, auth, strategies, data, backtest
 from services.rate_limiter import fixed_window
@@ -26,11 +26,6 @@ app.add_middleware(
 ip_cache = {}
 lock = threading.Lock()
 
-
-@app.on_event("startup")
-async def startup_event():
-    # Create database tables (if they don't exist)
-    await init_db()  
 
 @app.on_event("shutdown")
 async def on_shutdown():

@@ -51,7 +51,7 @@ docker compose up
 
 The `backend` and `frontend` services run in dev mode with hot reload — edits to files under `BackEnd/` or `FrontEnd/` are picked up automatically. (On Docker Desktop for macOS/Windows, file-change detection across the VM boundary can be unreliable — if hot reload doesn't trigger, set `WATCHFILES_FORCE_POLLING=true` for the backend and enable `server.watch.usePolling` in `FrontEnd/vite.config.js` for the frontend.) **The `worker` service does NOT hot-reload** despite the same `./BackEnd:/app` bind mount — Celery has no autoreload wired up here, so editing backend code restarts `uvicorn` automatically but the worker keeps running stale code until you `docker compose restart worker`.
 
-This branch adds new columns to `BacktestResult`/`PortfolioBacktestResult` and a new `DataImportJob` table. There's no migration tooling (see CLAUDE.md), so an existing local Postgres volume from before this branch needs `docker compose down -v` (or the tables dropped manually) before `docker compose up` will work against it.
+Schema changes are managed with [Alembic](https://alembic.sqlalchemy.org/) (see CLAUDE.md's "Database migrations" section) — the `backend` and `worker` images both run `alembic upgrade head` on container start, before `uvicorn`/`celery` starts, so a fresh `docker compose up` always lands on an up-to-date schema automatically. If you have a pre-Alembic local Postgres volume (from before this was added), stamp it once instead of migrating from scratch: `docker compose exec backend uv run alembic stamp head` (safe as long as its tables already match `database/models.py` — otherwise `docker compose down -v` for a clean volume).
 
 Postgres data persists in a named Docker volume across restarts. To stop the stack and keep data: `docker compose down`. To also remove the Postgres volume (deletes all data): `docker compose down -v`.
 
@@ -66,6 +66,7 @@ Requires [uv](https://docs.astral.sh/uv/) (`pip install uv` or see its install d
 ```bash
 cd BackEnd
 uv sync
+uv run alembic upgrade head   # apply the schema to your local Postgres
 uv run uvicorn app:app --reload
 ```
 
