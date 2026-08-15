@@ -81,3 +81,46 @@ async def test_walk_forward_backtest_result_round_trips(session_factory):
         assert loaded.folds == [{"fold_index": 0, "return_pct": 1.5}]
         assert loaded.benchmark_equity_curve == [{"date": "2016-01-01T00:00:00", "equity": 10000.0}]
         assert loaded.status == "pending"  # default
+
+
+from services.walk_forward_service import compute_fold_boundaries, estimate_fold_count
+
+
+def test_compute_fold_boundaries_raises_when_range_too_short():
+    with pytest.raises(ValueError, match="too short"):
+        compute_fold_boundaries(datetime(2024, 1, 1), datetime(2024, 6, 1), test_window_days=90)
+
+
+def test_compute_fold_boundaries_produces_contiguous_expanding_folds():
+    start = datetime(2015, 1, 1)
+    end = datetime(2020, 1, 1)
+    folds = compute_fold_boundaries(start, end, test_window_days=180)
+
+    assert len(folds) >= 5
+    for i, fold in enumerate(folds):
+        assert fold["fold_index"] == i
+        assert fold["train_start"] == start
+        assert fold["train_end"] == fold["test_start"] - timedelta(days=1)
+        assert (fold["test_end"] - fold["test_start"]).days == 179  # 180-day inclusive window
+        assert fold["test_end"] <= end
+        if i > 0:
+            assert fold["test_start"] == folds[i - 1]["test_end"] + timedelta(days=1)
+            assert fold["train_end"] > folds[i - 1]["train_end"]  # expanding
+
+
+def test_compute_fold_boundaries_drops_short_trailing_remainder():
+    start = datetime(2015, 1, 1)
+    # 365 (min train) + 180 (one full fold) + a 50-day remainder, too short
+    # for a second 180-day fold -> exactly 1 fold, remainder dropped.
+    end = start + timedelta(days=365) + timedelta(days=179) + timedelta(days=50)
+    folds = compute_fold_boundaries(start, end, test_window_days=180)
+    assert len(folds) == 1
+    assert folds[0]["test_end"] < end
+
+
+def test_estimate_fold_count_is_a_conservative_upper_bound():
+    start = datetime(2015, 1, 1)
+    end = datetime(2020, 1, 1)
+    actual = len(compute_fold_boundaries(start, end, test_window_days=180))
+    estimate = estimate_fold_count(start, end, test_window_days=180)
+    assert estimate >= actual
