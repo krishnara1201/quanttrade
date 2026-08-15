@@ -35,6 +35,12 @@ def run_portfolio_backtest_task(portfolio_backtest_id: int) -> None:
     asyncio.run(_run_with_session(execute_portfolio_backtest, portfolio_backtest_id))
 
 
+@celery_app.task(name="tasks.walk_forward_task")
+def walk_forward_task(walk_forward_backtest_id: int) -> None:
+    from services.walk_forward_service import execute_walk_forward
+    asyncio.run(_run_with_session(execute_walk_forward, walk_forward_backtest_id))
+
+
 @celery_app.task(name="tasks.upload_csv_task")
 def upload_csv_task(job_id: int, ticker: Optional[str], content_b64: str) -> None:
     from services.data_import_service import execute_csv_import

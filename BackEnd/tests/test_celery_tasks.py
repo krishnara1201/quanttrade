@@ -1,12 +1,12 @@
 import asyncio
 import json
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import pytest
 import pytest_asyncio
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
 
-from database.models import Base, User, Project, Strategy, BacktestResult, PortfolioBacktestResult, MarketData, DataImportJob
+from database.models import Base, User, Project, Strategy, BacktestResult, PortfolioBacktestResult, MarketData, DataImportJob, WalkForwardBacktestResult
 
 
 @pytest_asyncio.fixture
@@ -145,3 +145,58 @@ async def test_import_alpha_vantage_task_marks_job_failed_after_retries_exhauste
 
     assert job.status == "failed"
     assert "after retries" in job.error_message
+
+
+@pytest_asyncio.fixture
+async def walk_forward_seeded(session_factory):
+    async with session_factory() as db:
+        user = User(name="Ada", email="ada@example.com", password_hash="x")
+        db.add(user)
+        await db.flush()
+        project = Project(name="p", owner_id=user.id)
+        db.add(project)
+        await db.flush()
+        strategy = Strategy(
+            name="ml", project_id=project.id,
+            parameters=json.dumps({"name": "ml", "mode": "custom_code"}),
+            code=(
+                "def generate_signals(df):\n"
+                "    up = (df['close'] > df['close'].shift(1)).astype(int)\n"
+                "    down = (df['close'] < df['close'].shift(1)).astype(int)\n"
+                "    return up - down\n"
+            ),
+        )
+        db.add(strategy)
+        await db.flush()
+
+        wf = WalkForwardBacktestResult(
+            strategy_id=strategy.id, ticker="AAPL",
+            start_date=datetime(2015, 1, 1), end_date=datetime(2020, 1, 1),
+            test_window_days=180, initial_capital=10000.0, commission_pct=0.1, slippage_pct=0.05,
+        )
+        db.add(wf)
+
+        start = datetime(2015, 1, 1)
+        for i in range(365 * 5):
+            db.add(MarketData(
+                ticker="AAPL", date=start + timedelta(days=i),
+                open="100", high="101", low="99", close=str(100 + (i % 10)), volume="1000",
+            ))
+        await db.commit()
+        return {"walk_forward_id": wf.id}
+
+
+@pytest.mark.asyncio
+async def test_walk_forward_task_marks_row_success(session_factory, walk_forward_seeded):
+    from tasks import walk_forward_task
+    await asyncio.to_thread(walk_forward_task.delay, walk_forward_seeded["walk_forward_id"])
+
+    async with session_factory() as db:
+        from sqlalchemy import select
+        result = await db.execute(
+            select(WalkForwardBacktestResult).where(WalkForwardBacktestResult.id == walk_forward_seeded["walk_forward_id"])
+        )
+        record = result.scalars().first()
+
+    assert record.status == "success"
+    assert record.folds_completed == record.total_folds
