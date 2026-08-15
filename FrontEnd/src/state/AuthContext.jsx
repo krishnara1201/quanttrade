@@ -23,6 +23,7 @@ export function AuthProvider({ children }) {
   const [bootstrapping, setBootstrapping] = useState(true);
   const [error, setError] = useState('');
   const refreshTimerRef = useRef(null);
+  const inFlightRefreshRef = useRef(null);
 
   // Applied synchronously during render (not in an effect) so the axios
   // client has the Authorization header attached before any child's
@@ -47,15 +48,33 @@ export function AuthProvider({ children }) {
     }
   }, []);
 
-  const silentRefresh = useCallback(async () => {
-    try {
-      const resp = await authApi.refresh();
-      applyToken(resp.access_token);
-      return resp.access_token;
-    } catch (err) {
-      clearSession();
-      return null;
+  const silentRefresh = useCallback(() => {
+    // Single-flight guard: concurrent callers (e.g. several pages' mount-time
+    // 401s all hitting the client.js interceptor's refreshHandler at once, or
+    // React.StrictMode's synchronous double-invoke of the bootstrap effect)
+    // must share one outstanding /api/auth/refresh request rather than each
+    // firing their own — a second request racing in with the same
+    // not-yet-rotated refresh-token cookie gets flagged as reuse by the
+    // backend and revokes every live refresh token for the user. The ref is
+    // set synchronously (before any await) so same-tick concurrent calls see
+    // it already populated instead of racing to check-then-set.
+    if (inFlightRefreshRef.current) {
+      return inFlightRefreshRef.current;
     }
+    const promise = (async () => {
+      try {
+        const resp = await authApi.refresh();
+        applyToken(resp.access_token);
+        return resp.access_token;
+      } catch (err) {
+        clearSession();
+        return null;
+      } finally {
+        inFlightRefreshRef.current = null;
+      }
+    })();
+    inFlightRefreshRef.current = promise;
+    return promise;
   }, [applyToken, clearSession]);
 
   useEffect(() => {

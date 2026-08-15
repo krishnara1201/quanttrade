@@ -3,7 +3,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, waitFor, act, fireEvent } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { AuthProvider, useAuth } from './AuthContext.jsx';
-import client from '../api/client.js';
+import client, { handleResponseError } from '../api/client.js';
 import * as authApi from '../api/auth.js';
 
 vi.mock('../api/auth.js');
@@ -213,5 +213,67 @@ describe('AuthProvider', () => {
     });
 
     expect(authApi.refresh).toHaveBeenCalledTimes(2);
+  });
+
+  it('single-flights concurrent refresh calls so simultaneous 401s share one in-flight request', async () => {
+    authApi.refresh.mockResolvedValue({
+      access_token: fakeJwt({ sub: 'trader@desk.com', user_id: 1, exp: futureExp(900) }),
+    });
+
+    render(
+      <AuthProvider>
+        <TestConsumer />
+      </AuthProvider>
+    );
+    await waitFor(() => expect(screen.getByTestId('bootstrapping')).toHaveTextContent('false'));
+
+    // The bootstrap call above already consumed one authApi.refresh call and
+    // registered AuthContext's silentRefresh as client.js's refreshHandler
+    // (via setRefreshHandler). Reset the counter and swap in a
+    // manually-resolvable promise so we can prove two callers overlap in
+    // time (both in flight before either resolves), not just that they run
+    // one after another.
+    authApi.refresh.mockClear();
+    let resolveRefresh;
+    authApi.refresh.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          resolveRefresh = resolve;
+        })
+    );
+    const requestSpy = vi.spyOn(client, 'request').mockResolvedValue({ data: 'retried' });
+
+    // Simulate two independent page components each getting a 401 on mount
+    // (e.g. ProjectsPage and StrategiesPage both firing their own initial
+    // fetch right as the access token expired) and both routing through
+    // client.js's real 401-retry interceptor at (almost) the same instant.
+    // handleResponseError is only async at its `await refreshHandler()`
+    // point, so calling it twice back-to-back here — with neither call
+    // awaited in between — reproduces true concurrency: both invocations
+    // run synchronously up to that await before either yields.
+    const error1 = { config: { url: '/api/projects', headers: {} }, response: { status: 401 } };
+    const error2 = { config: { url: '/api/strategies', headers: {} }, response: { status: 401 } };
+
+    const p1 = handleResponseError(error1).catch(() => {});
+    const p2 = handleResponseError(error2).catch(() => {});
+
+    // Both callers should have shared the single in-flight refresh call —
+    // the second caller must NOT have fired its own request while the first
+    // is still pending.
+    expect(authApi.refresh).toHaveBeenCalledTimes(1);
+
+    resolveRefresh({
+      access_token: fakeJwt({ sub: 'trader@desk.com', user_id: 1, exp: futureExp(900) }),
+    });
+
+    await act(async () => {
+      await Promise.all([p1, p2]);
+    });
+
+    // Still exactly one refresh call after both callers have fully resolved.
+    expect(authApi.refresh).toHaveBeenCalledTimes(1);
+    expect(requestSpy).toHaveBeenCalledTimes(2);
+
+    requestSpy.mockRestore();
   });
 });
