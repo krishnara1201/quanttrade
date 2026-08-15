@@ -51,3 +51,30 @@ export async function getPortfolioBacktestDetail(portfolioBacktestId) {
   const { data } = await client.get(`/api/backtest/portfolio/${portfolioBacktestId}`);
   return data;
 }
+
+export async function runWalkForwardBacktest(strategyId, ticker, startDate, endDate, testWindowDays, initialCapital = 10000, commissionPct = 0.1, slippagePct = 0.05, allowShort = false, stopLossPct = null, takeProfitPct = null) {
+  const { data } = await client.post('/api/backtest/run-walk-forward', {
+    strategy_id: strategyId,
+    ticker,
+    start_date: startDate,
+    end_date: endDate,
+    test_window_days: testWindowDays,
+    initial_capital: initialCapital,
+    commission_pct: commissionPct,
+    slippage_pct: slippagePct,
+    allow_short: allowShort,
+    stop_loss_pct: stopLossPct,
+    take_profit_pct: takeProfitPct,
+  });
+  return data;
+}
+
+export async function getWalkForwardBacktestResults(strategyId) {
+  const { data } = await client.get(`/api/backtest/walk-forward/results/${strategyId}`);
+  return data;
+}
+
+export async function getWalkForwardBacktestDetail(walkForwardBacktestId) {
+  const { data } = await client.get(`/api/backtest/walk-forward/${walkForwardBacktestId}`);
+  return data;
+}
