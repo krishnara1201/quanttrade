@@ -13,9 +13,25 @@ class User(Base):
     name = Column(String, nullable=False)
     email = Column(String, unique=True, index=True)
     password_hash = Column(String)
+    failed_login_attempts = Column(Integer, default=0, nullable=False)
+    locked_until = Column(DateTime, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     projects = relationship("Project", back_populates="owner", cascade="all, delete-orphan")
-    
+
+
+class RefreshToken(Base):
+    """A rotating, revocable refresh token backing the short-lived JWT access
+    token — see routers/auth.py. Only the SHA-256 hash of the raw token is
+    stored; the raw value only ever exists as an httpOnly cookie in transit."""
+    __tablename__ = "refresh_tokens"
+    id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    token_hash = Column(String, unique=True, index=True, nullable=False)
+    expires_at = Column(DateTime, nullable=False)
+    revoked_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
 
 class Project(Base):
     __tablename__ = "projects"
