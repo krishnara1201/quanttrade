@@ -224,6 +224,12 @@ export default function BacktestResultsPage() {
               {selectedResult._type === 'walk_forward' && (
                 <>
                   <h3 style={{ marginTop: '20px' }}>Per-fold breakdown</h3>
+                  <p className="muted">
+                    Trades are settled at each fold boundary — any position still open at the end of a
+                    fold is closed into the next fold's starting capital with no commission/slippage and
+                    no recorded exit trade, so trade counts and returns here aren't directly comparable
+                    to a single continuous backtest over the same period.
+                  </p>
                   <div className="trades-list">
                     {(selectedResult.folds || []).map((fold) => (
                       <div key={fold.fold_index} className="trade-item">

@@ -209,6 +209,20 @@ async def test_create_pending_walk_forward_backtest_rejects_rules_mode_strategy(
 
 
 @pytest.mark.asyncio
+async def test_create_pending_walk_forward_backtest_rejects_too_small_test_window(session_factory, custom_code_strategy_seeded):
+    """test_window_days=1 over a multi-year range would produce thousands of
+    sequential sandboxed subprocess launches and a Celery time limit measured
+    in hours from a single API request — reject anything under 30 days."""
+    async with session_factory() as db:
+        user = await _reload_user(session_factory, custom_code_strategy_seeded["user_id"])
+        with pytest.raises(ValueError, match="at least 30"):
+            await walk_forward_service.create_pending_walk_forward_backtest(
+                custom_code_strategy_seeded["custom_code_strategy_id"], "AAPL",
+                "2015-01-01", "2020-01-01", 1, 10000.0, 0.1, 0.05, db, user,
+            )
+
+
+@pytest.mark.asyncio
 async def test_create_pending_walk_forward_backtest_rejects_unauthorized_user(session_factory, custom_code_strategy_seeded):
     async with session_factory() as db:
         other_user = User(name="Eve", email="eve@example.com", password_hash="x")
@@ -408,3 +422,110 @@ async def test_execute_walk_forward_fails_whole_run_naming_the_fold(session_fact
     assert loaded.status == "failed"
     assert "Fold 1" in loaded.error_message
     assert loaded.folds_completed == 0
+
+
+# The literal example strategy shown to users in StrategiesPage.jsx's
+# collapsible "Example strategy for walk-forward" panel (walk-forward
+# toggle) — copied verbatim so this test exercises the exact code path a
+# real user would paste in, not a simplified stand-in. Deliberately avoids
+# `import pandas`/`import numpy` (both disallowed in the sandbox) and only
+# uses `df`'s own methods, same as every other custom-code fixture in this
+# file, but this is the one fixture that actually fits/predicts with a real
+# sklearn model per fold inside the resource-limited sandbox subprocess.
+LOGISTIC_REGRESSION_EXAMPLE_CODE = """from sklearn.linear_model import LogisticRegression
+
+def generate_signals(df):
+    df = df.copy()
+    df['return_1d'] = df['close'].pct_change()
+    df['sma_10'] = df['close'].rolling(10).mean()
+    df['sma_30'] = df['close'].rolling(30).mean()
+    df['momentum'] = df['close'] / df['close'].shift(10) - 1
+    df['target'] = (df['close'].shift(-1) > df['close']).astype(int)
+
+    features = ['return_1d', 'sma_10', 'sma_30', 'momentum']
+    train = df.dropna(subset=features + ['target'])
+
+    # Walk-forward calls this fresh each fold with a growing df --
+    # early folds may not have enough rows yet. Stay flat rather than
+    # fit on too little data.
+    if len(train) < 50:
+        return df['close'] * 0
+
+    model = LogisticRegression()
+    model.fit(train[features], train['target'])
+
+    predictable = df.dropna(subset=features)
+    preds = model.predict(predictable[features])  # 0/1
+
+    signal = df['close'] * 0
+    signal.loc[predictable.index] = preds * 2 - 1  # -> -1/1
+    return signal
+"""
+
+
+@pytest_asyncio.fixture
+async def logistic_regression_strategy_seeded(session_factory):
+    """User/project/custom-code strategy running the literal sklearn
+    LogisticRegression example shown in StrategiesPage.jsx's walk-forward
+    panel, plus 5 years of daily bars — enough for multiple expanding
+    folds. Prices oscillate (not flat/monotonic) so the model actually has
+    varying features/targets to fit on each fold."""
+    async with session_factory() as db:
+        user = User(name="Ada", email="ada@example.com", password_hash="x")
+        db.add(user)
+        await db.flush()
+        project = Project(name="proj", owner_id=user.id)
+        db.add(project)
+        await db.flush()
+        strategy = Strategy(
+            name="logreg-strat", project_id=project.id,
+            parameters=json.dumps({"name": "logreg-strat", "mode": "custom_code"}),
+            code=LOGISTIC_REGRESSION_EXAMPLE_CODE,
+        )
+        db.add(strategy)
+        await db.flush()
+
+        start = datetime(2015, 1, 1)
+        for i in range(365 * 5):
+            close = 100 + 10 * ((i % 20) - 10) / 10 + (i % 3)
+            db.add(MarketData(
+                ticker="AAPL", date=start + timedelta(days=i),
+                open=str(close), high=str(close + 1), low=str(close - 1),
+                close=str(close), volume="1000",
+            ))
+        await db.commit()
+        return {"user_id": user.id, "strategy_id": strategy.id}
+
+
+@pytest.mark.asyncio
+async def test_execute_walk_forward_end_to_end_with_real_sklearn_logistic_regression(
+    session_factory, logistic_regression_strategy_seeded
+):
+    """True end-to-end test: the exact LogisticRegression example users see
+    in the UI, run across multiple real folds, each fold spawning a real
+    sandboxed subprocess that fits/predicts a fresh model. Every other
+    custom-code fixture in this file uses a trivial up/down momentum diff
+    strategy, so this is the only test that exercises the feature's actual
+    purpose (repeatedly refitting an ML model per fold in the sandbox).
+    Expect this to take noticeably longer than a typical unit test — that's
+    expected, matching this repo's no-mocks testing philosophy."""
+    async with session_factory() as db:
+        user = await _reload_user(session_factory, logistic_regression_strategy_seeded["user_id"])
+        record = await walk_forward_service.create_pending_walk_forward_backtest(
+            logistic_regression_strategy_seeded["strategy_id"], "AAPL",
+            "2015-01-01", "2020-01-01", 180, 10000.0, 0.1, 0.05, db, user,
+        )
+        await walk_forward_service.execute_walk_forward(record.id, db)
+
+    async with session_factory() as db:
+        result = await db.execute(select(WalkForwardBacktestResult).where(WalkForwardBacktestResult.id == record.id))
+        loaded = result.scalars().first()
+
+    assert loaded.status == "success", loaded.error_message
+    assert loaded.total_folds >= 2
+    assert loaded.folds_completed == loaded.total_folds
+    assert len(loaded.folds) == loaded.total_folds
+
+    for key in ("total_return", "return_pct", "final_capital", "win_rate", "num_trades",
+                "max_drawdown_pct", "sharpe_ratio"):
+        assert key in loaded.results

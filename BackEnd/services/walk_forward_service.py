@@ -117,6 +117,8 @@ async def create_pending_walk_forward_backtest(
 
     if test_window_days <= 0:
         raise ValueError("test_window_days must be positive")
+    if test_window_days < 30:
+        raise ValueError("test_window_days must be at least 30")
     if stop_loss_pct is not None and stop_loss_pct <= 0:
         raise ValueError("stop_loss_pct must be positive")
     if take_profit_pct is not None and take_profit_pct <= 0:
@@ -212,7 +214,24 @@ async def execute_walk_forward(walk_forward_backtest_id: int, db: AsyncSession) 
     Runs inside a Celery worker via asyncio.run() (see tasks.py). Never
     raises — any failure (no market data, date range too short, a fold's
     sandbox call failing) is recorded on the row as status='failed' +
-    error_message, since a worker has no HTTP response to raise into."""
+    error_message, since a worker has no HTTP response to raise into.
+
+    Fold-boundary caveat: each fold's _execute_trades(test_slice,
+    fold_start_capital, ...) call always starts flat, with
+    cash=fold_start_capital. If the previous fold ended holding an open
+    position, that position's mark-to-market value silently becomes the
+    next fold's starting cash — with no commission, no slippage, and no
+    'exit' trade recorded in all_trades. This means num_trades/win_rate
+    (computed from exit trades only) undercount, and returns are biased
+    slightly upward at every fold boundary for an always-in-market
+    strategy. This is the spec'd behavior (each fold runs _execute_trades
+    independently), not a bug — but it means num_trades/win_rate/returns
+    from a walk-forward run are NOT directly comparable to an equivalent
+    single continuous backtest of the same strategy over the same period,
+    especially for always-in-market strategies with short test windows. A
+    real fix (carrying the open position itself across the boundary, not
+    just its mark-to-market value) would change historical result numbers
+    and needs its own design discussion — out of scope here."""
     result = await db.execute(
         select(WalkForwardBacktestResult)
         .options(selectinload(WalkForwardBacktestResult.strategy))
