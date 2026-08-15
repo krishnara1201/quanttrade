@@ -12,10 +12,6 @@ export default function BacktestResultsPage() {
   const [detailLoading, setDetailLoading] = useState(false);
   const [expandedTicker, setExpandedTicker] = useState(null);
 
-  // loadResults isn't memoized, so its closure over `selectedResult` can be
-  // stale by the time a setInterval tick fires it (see the effect below) —
-  // a ref always reflects the latest selection regardless of which render's
-  // closure is currently running.
   const selectedResultRef = useRef(null);
   useEffect(() => {
     selectedResultRef.current = selectedResult;
@@ -25,13 +21,15 @@ export default function BacktestResultsPage() {
     if (!preserveSelection) setLoading(true);
     setError('');
     try {
-      const [singleResults, portfolioResults] = await Promise.all([
+      const [singleResults, portfolioResults, walkForwardResults] = await Promise.all([
         backtestApi.getBacktestResults(strategyId),
         backtestApi.getPortfolioBacktestResults(strategyId),
+        backtestApi.getWalkForwardBacktestResults(strategyId),
       ]);
       const merged = [
         ...(singleResults || []).map((r) => ({ ...r, _type: 'single' })),
         ...(portfolioResults || []).map((r) => ({ ...r, _type: 'portfolio' })),
+        ...(walkForwardResults || []).map((r) => ({ ...r, _type: 'walk_forward' })),
       ].sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
       setResults(merged);
       if (!preserveSelection && merged.length > 0) {
@@ -39,7 +37,9 @@ export default function BacktestResultsPage() {
       } else if (preserveSelection && selectedResultRef.current) {
         const prev = selectedResultRef.current;
         const updated = merged.find((r) => r.id === prev.id && r._type === prev._type);
-        if (updated && updated.status !== prev.status && (updated.status === 'success' || updated.status === 'failed')) {
+        const finished = updated && updated.status !== prev.status && (updated.status === 'success' || updated.status === 'failed');
+        const progressed = updated && updated._type === 'walk_forward' && updated.folds_completed !== prev.folds_completed;
+        if (finished || progressed) {
           loadDetail(updated);
         }
       }
@@ -54,9 +54,14 @@ export default function BacktestResultsPage() {
     setDetailLoading(true);
     setExpandedTicker(null);
     try {
-      const data = result._type === 'portfolio'
-        ? await backtestApi.getPortfolioBacktestDetail(result.id)
-        : await backtestApi.getBacktestDetail(result.id);
+      let data;
+      if (result._type === 'portfolio') {
+        data = await backtestApi.getPortfolioBacktestDetail(result.id);
+      } else if (result._type === 'walk_forward') {
+        data = await backtestApi.getWalkForwardBacktestDetail(result.id);
+      } else {
+        data = await backtestApi.getBacktestDetail(result.id);
+      }
       setSelectedResult({ ...data, _type: result._type });
     } catch (err) {
       setError(err?.response?.data?.detail || 'Failed to load backtest details');
@@ -106,9 +111,17 @@ export default function BacktestResultsPage() {
                 <div>
                   <div className="title-row">
                     <span className="title">Backtest #{result.id}</span>
-                    {result._type === 'portfolio' ? (
+                    {result._type === 'portfolio' && (
                       <span className="chip">Portfolio · {result.allocations?.length || 0} tickers</span>
-                    ) : (
+                    )}
+                    {result._type === 'walk_forward' && (
+                      <span className="chip">
+                        Walk-forward · {result.status === 'running'
+                          ? `Fold ${result.folds_completed || 0}/${result.total_folds || '?'}`
+                          : `${result.total_folds || 0} folds`}
+                      </span>
+                    )}
+                    {result._type === 'single' && (
                       <span className="chip">{result.num_trades} trades</span>
                     )}
                     {result.status && result.status !== 'success' && (
@@ -135,7 +148,9 @@ export default function BacktestResultsPage() {
                 >
                   {selectedResult.status === 'failed'
                     ? `Backtest failed: ${selectedResult.error_message || 'Unknown error'}`
-                    : `Backtest ${selectedResult.status}…`}
+                    : selectedResult._type === 'walk_forward'
+                      ? `Running fold ${selectedResult.folds_completed || 0} of ${selectedResult.total_folds || '?'}…`
+                      : `Backtest ${selectedResult.status}…`}
                 </div>
               )}
               <div className="metrics-grid">
@@ -165,7 +180,7 @@ export default function BacktestResultsPage() {
                 </div>
               </div>
 
-              {selectedResult._type === 'portfolio' ? (
+              {selectedResult._type === 'portfolio' && (
                 <>
                   <h3 style={{ marginTop: '20px' }}>Per-ticker breakdown</h3>
                   <div className="list">
@@ -204,7 +219,32 @@ export default function BacktestResultsPage() {
                     })}
                   </div>
                 </>
-              ) : (
+              )}
+
+              {selectedResult._type === 'walk_forward' && (
+                <>
+                  <h3 style={{ marginTop: '20px' }}>Per-fold breakdown</h3>
+                  <div className="trades-list">
+                    {(selectedResult.folds || []).map((fold) => (
+                      <div key={fold.fold_index} className="trade-item">
+                        <span className="badge">Fold {fold.fold_index + 1}</span>
+                        <span className="muted">
+                          Train {fold.train_start.slice(0, 10)} → {fold.train_end.slice(0, 10)}
+                        </span>
+                        <span className="muted">
+                          Test {fold.test_start.slice(0, 10)} → {fold.test_end.slice(0, 10)}
+                        </span>
+                        <span className={fold.return_pct > 0 ? 'profit' : 'loss'}>
+                          {fold.return_pct > 0 ? '+' : ''}{fold.return_pct.toFixed(2)}%
+                        </span>
+                        <span className="muted">{fold.num_trades} trades</span>
+                      </div>
+                    ))}
+                  </div>
+                </>
+              )}
+
+              {selectedResult._type === 'single' && (
                 <>
                   <h3 style={{ marginTop: '20px' }}>Trades</h3>
                   <div className="trades-list">
@@ -236,7 +276,7 @@ export default function BacktestResultsPage() {
         </div>
       </div>
 
-      {/* Aggregate chart (single-ticker: price+signals+equity; portfolio: equity only, per-ticker charts are inline above) */}
+      {/* Aggregate chart */}
       {selectedResult && selectedResult._type === 'single' && (
         <div className="card" style={{ marginTop: '20px' }}>
           <h3>Price & Signals</h3>
@@ -244,6 +284,7 @@ export default function BacktestResultsPage() {
             data={selectedResult.signals}
             trades={selectedResult.trades}
             equityCurve={selectedResult.equity_curve}
+            benchmarkEquityCurve={selectedResult.benchmark_equity_curve}
           />
         </div>
       )}
@@ -251,10 +292,23 @@ export default function BacktestResultsPage() {
         <div className="card" style={{ marginTop: '20px' }}>
           <h3>Portfolio Equity</h3>
           <BacktestChart
-            data={(selectedResult.equity_curve || []).map((p) => ({ date: p.date, close: p.equity, signal: 0 }))}
+            data={[]}
             trades={[]}
-            equityCurve={[]}
-            priceName="Portfolio Equity"
+            equityCurve={selectedResult.equity_curve}
+            benchmarkEquityCurve={selectedResult.benchmark_equity_curve}
+            equityName="Portfolio Equity"
+          />
+        </div>
+      )}
+      {selectedResult && selectedResult._type === 'walk_forward' && (
+        <div className="card" style={{ marginTop: '20px' }}>
+          <h3>Walk-Forward OOS Equity</h3>
+          <BacktestChart
+            data={[]}
+            trades={[]}
+            equityCurve={selectedResult.equity_curve}
+            benchmarkEquityCurve={selectedResult.benchmark_equity_curve}
+            equityName="Walk-Forward OOS Equity"
           />
         </div>
       )}
