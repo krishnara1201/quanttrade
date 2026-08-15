@@ -124,3 +124,124 @@ def test_estimate_fold_count_is_a_conservative_upper_bound():
     actual = len(compute_fold_boundaries(start, end, test_window_days=180))
     estimate = estimate_fold_count(start, end, test_window_days=180)
     assert estimate >= actual
+
+
+from services import walk_forward_service
+
+
+async def _reload_user(session_factory, user_id):
+    async with session_factory() as db:
+        result = await db.execute(select(User).where(User.id == user_id))
+        return result.scalars().first()
+
+
+@pytest_asyncio.fixture
+async def custom_code_strategy_seeded(session_factory):
+    """User/project/custom-code strategy plus enough clean daily bars for
+    multiple walk-forward folds (5 years of calendar days)."""
+    async with session_factory() as db:
+        user = User(name="Ada", email="ada@example.com", password_hash="x")
+        db.add(user)
+        await db.flush()
+        project = Project(name="proj", owner_id=user.id)
+        db.add(project)
+        await db.flush()
+        strategy = Strategy(
+            name="ml-strat", project_id=project.id,
+            parameters=json.dumps({"name": "ml-strat", "mode": "custom_code"}),
+            code=(
+                "def generate_signals(df):\n"
+                "    up = (df['close'] > df['close'].shift(1)).astype(int)\n"
+                "    down = (df['close'] < df['close'].shift(1)).astype(int)\n"
+                "    return up - down\n"
+            ),
+        )
+        db.add(strategy)
+        await db.flush()
+
+        rules_strategy = Strategy(
+            name="rules-strat", project_id=project.id,
+            parameters=json.dumps({
+                "name": "rules-strat", "parameters": {},
+                "rules": {"entry": "close > 0", "exit": "close < 0"},
+            }),
+        )
+        db.add(rules_strategy)
+        await db.flush()
+
+        start = datetime(2015, 1, 1)
+        for i in range(365 * 5):
+            db.add(MarketData(
+                ticker="AAPL", date=start + timedelta(days=i),
+                open="100", high="101", low="99", close=str(100 + (i % 10)), volume="1000",
+            ))
+        await db.commit()
+        return {
+            "user_id": user.id,
+            "custom_code_strategy_id": strategy.id,
+            "rules_strategy_id": rules_strategy.id,
+        }
+
+
+@pytest.mark.asyncio
+async def test_create_pending_walk_forward_backtest_persists_row(session_factory, custom_code_strategy_seeded):
+    async with session_factory() as db:
+        user = await _reload_user(session_factory, custom_code_strategy_seeded["user_id"])
+        record = await walk_forward_service.create_pending_walk_forward_backtest(
+            custom_code_strategy_seeded["custom_code_strategy_id"], "AAPL",
+            "2015-01-01", "2020-01-01", 180, 10000.0, 0.1, 0.05, db, user,
+        )
+    assert record.status == "pending"
+    assert record.ticker == "AAPL"
+    assert record.test_window_days == 180
+    assert record.folds_completed == 0
+
+
+@pytest.mark.asyncio
+async def test_create_pending_walk_forward_backtest_rejects_rules_mode_strategy(session_factory, custom_code_strategy_seeded):
+    async with session_factory() as db:
+        user = await _reload_user(session_factory, custom_code_strategy_seeded["user_id"])
+        with pytest.raises(ValueError, match="custom-code strategy"):
+            await walk_forward_service.create_pending_walk_forward_backtest(
+                custom_code_strategy_seeded["rules_strategy_id"], "AAPL",
+                "2015-01-01", "2020-01-01", 180, 10000.0, 0.1, 0.05, db, user,
+            )
+
+
+@pytest.mark.asyncio
+async def test_create_pending_walk_forward_backtest_rejects_unauthorized_user(session_factory, custom_code_strategy_seeded):
+    async with session_factory() as db:
+        other_user = User(name="Eve", email="eve@example.com", password_hash="x")
+        db.add(other_user)
+        await db.commit()
+        await db.refresh(other_user)
+
+        with pytest.raises(ValueError, match="Unauthorized"):
+            await walk_forward_service.create_pending_walk_forward_backtest(
+                custom_code_strategy_seeded["custom_code_strategy_id"], "AAPL",
+                "2015-01-01", "2020-01-01", 180, 10000.0, 0.1, 0.05, db, other_user,
+            )
+
+
+@pytest.mark.asyncio
+async def test_get_walk_forward_backtest_results_and_detail_do_not_raise_missing_greenlet(session_factory, custom_code_strategy_seeded):
+    async with session_factory() as db:
+        user = await _reload_user(session_factory, custom_code_strategy_seeded["user_id"])
+        record = await walk_forward_service.create_pending_walk_forward_backtest(
+            custom_code_strategy_seeded["custom_code_strategy_id"], "AAPL",
+            "2015-01-01", "2020-01-01", 180, 10000.0, 0.1, 0.05, db, user,
+        )
+
+    async with session_factory() as db:
+        user = await _reload_user(session_factory, custom_code_strategy_seeded["user_id"])
+        results = await walk_forward_service.get_walk_forward_backtest_results(
+            custom_code_strategy_seeded["custom_code_strategy_id"], db, user,
+        )
+        assert len(results) == 1
+        assert results[0]["ticker"] == "AAPL"
+
+    async with session_factory() as db:
+        user = await _reload_user(session_factory, custom_code_strategy_seeded["user_id"])
+        detail = await walk_forward_service.get_walk_forward_backtest_detail(record.id, db, user)
+        assert detail["id"] == record.id
+        assert detail["status"] == "pending"
