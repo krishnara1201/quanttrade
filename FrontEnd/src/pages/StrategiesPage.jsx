@@ -50,6 +50,7 @@ export default function StrategiesPage() {
     { ticker: '', weight: 50 },
     { ticker: '', weight: 50 },
   ]);
+  const [testWindowMonths, setTestWindowMonths] = useState(6);
   const [backtestLoading, setBacktestLoading] = useState(false);
   const [tickers, setTickers] = useState([]);
   const [tickersLoading, setTickersLoading] = useState(true);
@@ -116,6 +117,23 @@ export default function StrategiesPage() {
     return strategies.filter((s) => String(s.project_id) === String(projectId));
   }, [strategies, projectId]);
 
+  const selectedStrategyConfig = useMemo(() => {
+    const strategy = filtered.find((s) => s.id === selectedStrategyId);
+    if (!strategy) return null;
+    try {
+      return typeof strategy.parameters === 'string' ? JSON.parse(strategy.parameters) : strategy.parameters;
+    } catch {
+      return null;
+    }
+  }, [filtered, selectedStrategyId]);
+  const isCustomCodeStrategy = selectedStrategyConfig?.mode === 'custom_code';
+
+  useEffect(() => {
+    if (backtestMode === 'walk_forward' && !isCustomCodeStrategy) {
+      setBacktestMode('single');
+    }
+  }, [isCustomCodeStrategy, backtestMode]);
+
   const updatePortfolioRow = (index, field, value) => {
     setPortfolioRows((prev) => prev.map((row, i) => (i === index ? { ...row, [field]: value } : row)));
   };
@@ -168,6 +186,20 @@ export default function StrategiesPage() {
           validPortfolioRows.map((r) => ({ ticker: r.ticker, weight: Number(r.weight) })),
           backtestForm.startDate,
           backtestForm.endDate,
+          backtestForm.initialCapital,
+          0.1,
+          0.05,
+          backtestForm.allowShort,
+          stopLossPct,
+          takeProfitPct
+        );
+      } else if (backtestMode === 'walk_forward') {
+        await backtestApi.runWalkForwardBacktest(
+          selectedStrategyId,
+          backtestForm.ticker,
+          backtestForm.startDate,
+          backtestForm.endDate,
+          testWindowMonths * 30, // approximate months->days; test_window_days is the API's unit
           backtestForm.initialCapital,
           0.1,
           0.05,
@@ -286,6 +318,15 @@ export default function StrategiesPage() {
                 >
                   Portfolio
                 </button>
+                <button
+                  type="button"
+                  className={backtestMode === 'walk_forward' ? 'primary-btn' : 'ghost-btn'}
+                  onClick={() => setBacktestMode('walk_forward')}
+                  disabled={!isCustomCodeStrategy}
+                  title={isCustomCodeStrategy ? undefined : 'Walk-forward evaluation requires a custom-code (Python) strategy'}
+                >
+                  Walk-forward
+                </button>
               </div>
 
               <div className="layout two-cols">
@@ -302,7 +343,7 @@ export default function StrategiesPage() {
                   </select>
                 </label>
 
-                {backtestMode === 'single' && (
+                {(backtestMode === 'single' || backtestMode === 'walk_forward') && (
                   <label className="field">
                     <span>Ticker</span>
                     <select
@@ -333,8 +374,8 @@ export default function StrategiesPage() {
                   <input
                     type="date"
                     value={backtestForm.startDate}
-                    min={backtestMode === 'single' && tickerRange ? toDateInputValue(tickerRange.start_date) : undefined}
-                    max={backtestMode === 'single' && tickerRange ? toDateInputValue(tickerRange.end_date) : undefined}
+                    min={(backtestMode === 'single' || backtestMode === 'walk_forward') && tickerRange ? toDateInputValue(tickerRange.start_date) : undefined}
+                    max={(backtestMode === 'single' || backtestMode === 'walk_forward') && tickerRange ? toDateInputValue(tickerRange.end_date) : undefined}
                     onChange={(e) => setBacktestForm({ ...backtestForm, startDate: e.target.value })}
                   />
                 </label>
@@ -343,8 +384,8 @@ export default function StrategiesPage() {
                   <input
                     type="date"
                     value={backtestForm.endDate}
-                    min={backtestMode === 'single' && tickerRange ? toDateInputValue(tickerRange.start_date) : undefined}
-                    max={backtestMode === 'single' && tickerRange ? toDateInputValue(tickerRange.end_date) : undefined}
+                    min={(backtestMode === 'single' || backtestMode === 'walk_forward') && tickerRange ? toDateInputValue(tickerRange.start_date) : undefined}
+                    max={(backtestMode === 'single' || backtestMode === 'walk_forward') && tickerRange ? toDateInputValue(tickerRange.end_date) : undefined}
                     onChange={(e) => setBacktestForm({ ...backtestForm, endDate: e.target.value })}
                   />
                 </label>
@@ -436,13 +477,62 @@ export default function StrategiesPage() {
                 </div>
               )}
 
+              {backtestMode === 'walk_forward' && (
+                <div className="stack" style={{ marginTop: '8px' }}>
+                  <label className="field">
+                    <span>Test window length</span>
+                    <select
+                      value={testWindowMonths}
+                      onChange={(e) => setTestWindowMonths(Number(e.target.value))}
+                    >
+                      <option value={3}>3 months</option>
+                      <option value={6}>6 months</option>
+                      <option value={12}>12 months</option>
+                    </select>
+                  </label>
+                  <details>
+                    <summary>Example strategy for walk-forward</summary>
+                    <pre className="code-editor" style={{ whiteSpace: 'pre-wrap' }}>
+{`from sklearn.linear_model import LogisticRegression
+
+def generate_signals(df):
+    df = df.copy()
+    df['return_1d'] = df['close'].pct_change()
+    df['sma_10'] = df['close'].rolling(10).mean()
+    df['sma_30'] = df['close'].rolling(30).mean()
+    df['momentum'] = df['close'] / df['close'].shift(10) - 1
+    df['target'] = (df['close'].shift(-1) > df['close']).astype(int)
+
+    features = ['return_1d', 'sma_10', 'sma_30', 'momentum']
+    train = df.dropna(subset=features + ['target'])
+
+    # Walk-forward calls this fresh each fold with a growing df --
+    # early folds may not have enough rows yet. Stay flat rather than
+    # fit on too little data.
+    if len(train) < 50:
+        return df['close'] * 0
+
+    model = LogisticRegression()
+    model.fit(train[features], train['target'])
+
+    predictable = df.dropna(subset=features)
+    preds = model.predict(predictable[features])  # 0/1
+
+    signal = df['close'] * 0
+    signal.loc[predictable.index] = preds * 2 - 1  # -> -1/1
+    return signal`}
+                    </pre>
+                  </details>
+                </div>
+              )}
+
               <button
                 className="primary-btn"
                 type="submit"
                 disabled={
                   backtestLoading ||
                   !selectedStrategyId ||
-                  (backtestMode === 'single' ? !backtestForm.ticker : validPortfolioRows.length < 2)
+                  (backtestMode === 'portfolio' ? validPortfolioRows.length < 2 : !backtestForm.ticker)
                 }
               >
                 {backtestLoading ? 'Running...' : 'Run Backtest'}
