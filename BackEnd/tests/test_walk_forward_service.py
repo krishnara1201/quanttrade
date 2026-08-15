@@ -245,3 +245,118 @@ async def test_get_walk_forward_backtest_results_and_detail_do_not_raise_missing
         detail = await walk_forward_service.get_walk_forward_backtest_detail(record.id, db, user)
         assert detail["id"] == record.id
         assert detail["status"] == "pending"
+
+
+@pytest.mark.asyncio
+async def test_execute_walk_forward_marks_row_failed_when_no_market_data(session_factory, custom_code_strategy_seeded):
+    async with session_factory() as db:
+        user = await _reload_user(session_factory, custom_code_strategy_seeded["user_id"])
+        record = await walk_forward_service.create_pending_walk_forward_backtest(
+            custom_code_strategy_seeded["custom_code_strategy_id"], "MSFT",  # no MarketData seeded for MSFT
+            "2015-01-01", "2020-01-01", 180, 10000.0, 0.1, 0.05, db, user,
+        )
+        await walk_forward_service.execute_walk_forward(record.id, db)
+
+    async with session_factory() as db:
+        result = await db.execute(select(WalkForwardBacktestResult).where(WalkForwardBacktestResult.id == record.id))
+        loaded = result.scalars().first()
+    assert loaded.status == "failed"
+    assert "No market data" in loaded.error_message
+
+
+@pytest.mark.asyncio
+async def test_execute_walk_forward_marks_row_failed_when_range_too_short(session_factory, custom_code_strategy_seeded):
+    async with session_factory() as db:
+        user = await _reload_user(session_factory, custom_code_strategy_seeded["user_id"])
+        record = await walk_forward_service.create_pending_walk_forward_backtest(
+            custom_code_strategy_seeded["custom_code_strategy_id"], "AAPL",
+            "2015-01-01", "2015-06-01", 90, 10000.0, 0.1, 0.05, db, user,
+        )
+        await walk_forward_service.execute_walk_forward(record.id, db)
+
+    async with session_factory() as db:
+        result = await db.execute(select(WalkForwardBacktestResult).where(WalkForwardBacktestResult.id == record.id))
+        loaded = result.scalars().first()
+    assert loaded.status == "failed"
+    assert "too short" in loaded.error_message
+
+
+@pytest.mark.asyncio
+async def test_execute_walk_forward_end_to_end_compounds_capital_and_tracks_progress(session_factory, custom_code_strategy_seeded):
+    async with session_factory() as db:
+        user = await _reload_user(session_factory, custom_code_strategy_seeded["user_id"])
+        record = await walk_forward_service.create_pending_walk_forward_backtest(
+            custom_code_strategy_seeded["custom_code_strategy_id"], "AAPL",
+            "2015-01-01", "2020-01-01", 180, 10000.0, 0.1, 0.05, db, user,
+        )
+        await walk_forward_service.execute_walk_forward(record.id, db)
+
+    async with session_factory() as db:
+        result = await db.execute(select(WalkForwardBacktestResult).where(WalkForwardBacktestResult.id == record.id))
+        loaded = result.scalars().first()
+
+    assert loaded.status == "success"
+    assert loaded.total_folds >= 5
+    assert loaded.folds_completed == loaded.total_folds
+    assert len(loaded.folds) == loaded.total_folds
+    for i, fold in enumerate(loaded.folds):
+        assert fold["fold_index"] == i
+        assert "return_pct" in fold
+        assert "num_trades" in fold
+    # equity curve is continuous across folds and tagged with fold_index
+    assert all("fold_index" in point for point in loaded.equity_curve)
+    assert loaded.equity_curve[0]["fold_index"] == 0
+    assert loaded.equity_curve[-1]["fold_index"] == loaded.total_folds - 1
+    # benchmark curve covers the same stitched OOS period
+    assert len(loaded.benchmark_equity_curve) > 0
+    assert loaded.benchmark_equity_curve[0]["date"] == loaded.equity_curve[0]["date"]
+    assert "return_pct" in loaded.results
+    assert "sharpe_ratio" in loaded.results
+
+
+@pytest_asyncio.fixture
+async def broken_custom_code_strategy_seeded(session_factory):
+    """A custom-code strategy whose generate_signals() always raises —
+    used to verify a fold failure fails the whole walk-forward run with a
+    message naming which fold failed."""
+    async with session_factory() as db:
+        user = User(name="Ada", email="ada@example.com", password_hash="x")
+        db.add(user)
+        await db.flush()
+        project = Project(name="proj", owner_id=user.id)
+        db.add(project)
+        await db.flush()
+        strategy = Strategy(
+            name="broken", project_id=project.id,
+            parameters=json.dumps({"name": "broken", "mode": "custom_code"}),
+            code="def generate_signals(df):\n    raise ValueError('boom')\n",
+        )
+        db.add(strategy)
+        await db.flush()
+
+        start = datetime(2015, 1, 1)
+        for i in range(365 * 5):
+            db.add(MarketData(
+                ticker="AAPL", date=start + timedelta(days=i),
+                open="100", high="101", low="99", close="100", volume="1000",
+            ))
+        await db.commit()
+        return {"user_id": user.id, "strategy_id": strategy.id}
+
+
+@pytest.mark.asyncio
+async def test_execute_walk_forward_fails_whole_run_naming_the_fold(session_factory, broken_custom_code_strategy_seeded):
+    async with session_factory() as db:
+        user = await _reload_user(session_factory, broken_custom_code_strategy_seeded["user_id"])
+        record = await walk_forward_service.create_pending_walk_forward_backtest(
+            broken_custom_code_strategy_seeded["strategy_id"], "AAPL",
+            "2015-01-01", "2020-01-01", 180, 10000.0, 0.1, 0.05, db, user,
+        )
+        await walk_forward_service.execute_walk_forward(record.id, db)
+
+    async with session_factory() as db:
+        result = await db.execute(select(WalkForwardBacktestResult).where(WalkForwardBacktestResult.id == record.id))
+        loaded = result.scalars().first()
+    assert loaded.status == "failed"
+    assert "Fold 1" in loaded.error_message
+    assert loaded.folds_completed == 0

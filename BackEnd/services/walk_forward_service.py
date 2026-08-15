@@ -13,11 +13,13 @@ import json
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
 
+import pandas as pd
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from database.models import Strategy, User, WalkForwardBacktestResult
+from database.models import MarketData, Strategy, User, WalkForwardBacktestResult
+from services.strategy_executor import StrategyExecutor, benchmark_equity_curve
 
 
 def compute_fold_boundaries(
@@ -202,3 +204,123 @@ async def get_walk_forward_backtest_detail(walk_forward_backtest_id: int, db: As
         "benchmark_equity_curve": record.benchmark_equity_curve,
         "created_at": record.created_at.isoformat(),
     }
+
+
+async def execute_walk_forward(walk_forward_backtest_id: int, db: AsyncSession) -> None:
+    """Run the fold loop for an already-created pending
+    WalkForwardBacktestResult row and write the outcome back onto that row.
+    Runs inside a Celery worker via asyncio.run() (see tasks.py). Never
+    raises — any failure (no market data, date range too short, a fold's
+    sandbox call failing) is recorded on the row as status='failed' +
+    error_message, since a worker has no HTTP response to raise into."""
+    result = await db.execute(
+        select(WalkForwardBacktestResult)
+        .options(selectinload(WalkForwardBacktestResult.strategy))
+        .where(WalkForwardBacktestResult.id == walk_forward_backtest_id)
+    )
+    record = result.scalars().first()
+    if record is None:
+        return
+
+    record.status = "running"
+    await db.commit()
+
+    try:
+        data_result = await db.execute(
+            select(MarketData).where(
+                MarketData.ticker == record.ticker,
+                MarketData.date >= record.start_date,
+                MarketData.date <= record.end_date,
+            ).order_by(MarketData.date)
+        )
+        rows = data_result.scalars().all()
+        if not rows:
+            raise ValueError(
+                f"No market data found for {record.ticker} between {record.start_date.date()} and {record.end_date.date()}"
+            )
+        df = pd.DataFrame([
+            {
+                "date": r.date, "open": float(r.open), "high": float(r.high),
+                "low": float(r.low), "close": float(r.close), "volume": float(r.volume),
+            }
+            for r in rows
+        ])
+        df.set_index("date", inplace=True)
+
+        folds = compute_fold_boundaries(record.start_date, record.end_date, record.test_window_days)
+        record.total_folds = len(folds)
+        await db.commit()
+
+        strategy = record.strategy
+        executor = StrategyExecutor(strategy.parameters, code=strategy.code)
+
+        running_capital = record.initial_capital
+        all_trades: List[Dict[str, Any]] = []
+        all_equity: List[Dict[str, Any]] = []
+        folds_summary: List[Dict[str, Any]] = []
+
+        for fold in folds:
+            fold_start_capital = running_capital
+            try:
+                growing_slice = df.loc[df.index <= fold["test_end"]].copy()
+                growing_slice["signal"] = executor.generate_signals(growing_slice)
+                test_mask = (
+                    (growing_slice.index >= fold["test_start"]) & (growing_slice.index <= fold["test_end"])
+                )
+                test_slice = growing_slice.loc[test_mask]
+                if test_slice.empty:
+                    raise ValueError("no market data in this fold's test window")
+
+                fold_trades, fold_equity = executor._execute_trades(
+                    test_slice, fold_start_capital, record.commission_pct, record.slippage_pct,
+                    allow_short=record.allow_short, stop_loss_pct=record.stop_loss_pct,
+                    take_profit_pct=record.take_profit_pct,
+                )
+            except Exception as e:
+                raise ValueError(
+                    f"Fold {fold['fold_index'] + 1}/{len(folds)} failed: {type(e).__name__}: {e}"
+                )
+
+            for point in fold_equity:
+                point["fold_index"] = fold["fold_index"]
+
+            running_capital = fold_equity[-1]["equity"] if fold_equity else fold_start_capital
+            folds_summary.append({
+                "fold_index": fold["fold_index"],
+                "train_start": fold["train_start"].isoformat(),
+                "train_end": fold["train_end"].isoformat(),
+                "test_start": fold["test_start"].isoformat(),
+                "test_end": fold["test_end"].isoformat(),
+                "return_pct": (
+                    float((running_capital - fold_start_capital) / fold_start_capital * 100)
+                    if fold_start_capital else 0.0
+                ),
+                "num_trades": len([t for t in fold_trades if t["type"] == "exit"]),
+            })
+            all_trades.extend(fold_trades)
+            all_equity.extend(fold_equity)
+
+            record.folds_completed += 1
+            await db.commit()
+
+        # _calculate_metrics doesn't actually use its `df` parameter (only
+        # trades/initial_capital/equity_curve) — see strategy_executor.py.
+        metrics = executor._calculate_metrics(None, all_trades, record.initial_capital, all_equity)
+        benchmark_df = df.loc[
+            (df.index >= folds[0]["test_start"]) & (df.index <= folds[-1]["test_end"])
+        ]
+        benchmark_curve = benchmark_equity_curve(benchmark_df, record.initial_capital)
+    except Exception as e:
+        await db.rollback()
+        record.status = "failed"
+        record.error_message = f"{type(e).__name__}: {e}"
+        await db.commit()
+        return
+
+    record.folds = folds_summary
+    record.trades = all_trades
+    record.equity_curve = all_equity
+    record.benchmark_equity_curve = benchmark_curve
+    record.results = metrics
+    record.status = "success"
+    await db.commit()
