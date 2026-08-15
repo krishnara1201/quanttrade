@@ -28,8 +28,17 @@ function renderAt(path) {
 }
 
 describe('ProtectedRoute', () => {
-  it('redirects to /auth when the user is not authenticated', () => {
-    useAuth.mockReturnValue({ isAuthenticated: false });
+  it('shows a loading state while the session is still bootstrapping, without redirecting', () => {
+    useAuth.mockReturnValue({ isAuthenticated: false, bootstrapping: true });
+
+    renderAt('/projects');
+
+    expect(screen.queryByText('auth page')).not.toBeInTheDocument();
+    expect(screen.queryByText('projects page')).not.toBeInTheDocument();
+  });
+
+  it('redirects to /auth once bootstrapped and not authenticated', () => {
+    useAuth.mockReturnValue({ isAuthenticated: false, bootstrapping: false });
 
     renderAt('/projects');
 
@@ -37,8 +46,8 @@ describe('ProtectedRoute', () => {
     expect(screen.queryByText('projects page')).not.toBeInTheDocument();
   });
 
-  it('renders the protected content when the user is authenticated', () => {
-    useAuth.mockReturnValue({ isAuthenticated: true });
+  it('renders the protected content once bootstrapped and authenticated', () => {
+    useAuth.mockReturnValue({ isAuthenticated: true, bootstrapping: false });
 
     renderAt('/projects');
 

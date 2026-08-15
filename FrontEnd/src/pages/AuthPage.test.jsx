@@ -34,8 +34,8 @@ function fakeJwt(payload) {
 
 describe('AuthPage', () => {
   beforeEach(() => {
-    localStorage.clear();
     vi.clearAllMocks();
+    authApi.refresh.mockRejectedValue(new Error('no session'));
   });
 
   it('logs in and navigates to /projects on success', async () => {
