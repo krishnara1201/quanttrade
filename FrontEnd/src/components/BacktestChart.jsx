@@ -8,11 +8,9 @@ function formatDateTick(value) {
   return typeof value === 'string' ? value.split('T')[0] : value;
 }
 
-export default function BacktestChart({ data, trades, equityCurve, priceName = 'Stock Price' }) {
-  if (!data || data.length === 0) {
-    return <p className="muted">No data to display</p>;
-  }
-
+export default function BacktestChart({
+  data, trades, equityCurve, benchmarkEquityCurve = [], priceName = 'Stock Price', equityName = 'Equity',
+}) {
   const entryByDate = new Map();
   const exitByDate = new Map();
   (trades || []).forEach((t) => {
@@ -20,7 +18,7 @@ export default function BacktestChart({ data, trades, equityCurve, priceName = '
     else if (t.type === 'exit') exitByDate.set(t.date, t);
   });
 
-  const chartData = data.map((d) => {
+  const chartData = (data || []).map((d) => {
     const entry = entryByDate.get(d.date) || null;
     const exit = exitByDate.get(d.date) || null;
     const isShortEntry = entry && entry.direction === 'short';
@@ -36,79 +34,88 @@ export default function BacktestChart({ data, trades, equityCurve, priceName = '
     };
   });
 
+  const benchmarkByDate = new Map((benchmarkEquityCurve || []).map((p) => [p.date, p.equity]));
+  const hasBenchmark = (benchmarkEquityCurve || []).length > 0;
   const equityData = (equityCurve || []).map((point) => ({
     date: point.date,
     equity: point.equity,
+    benchmark: benchmarkByDate.has(point.date) ? benchmarkByDate.get(point.date) : null,
   }));
+
+  if (chartData.length === 0 && equityData.length === 0) {
+    return <p className="muted">No data to display</p>;
+  }
 
   return (
     <div className="chart-container">
-      <ResponsiveContainer width="100%" height={400}>
-        <ComposedChart data={chartData} margin={{ top: 5, right: 30, left: 0, bottom: 25 }}>
-          <CartesianGrid strokeDasharray="3 3" />
-          <XAxis
-            dataKey="date"
-            tickFormatter={formatDateTick}
-            tick={{ fontSize: 12 }}
-            interval={Math.floor(chartData.length / 10)}
-          />
-          <YAxis yAxisId="left" />
-          <YAxis yAxisId="right" orientation="right" />
-          <Tooltip
-            formatter={(value) => (typeof value === 'number' ? value.toFixed(2) : value)}
-            labelFormatter={formatDateTick}
-            contentStyle={{ backgroundColor: '#10141f', border: '1px solid rgba(255, 255, 255, 0.08)' }}
-            labelStyle={{ color: '#f5f7fb' }}
-          />
-          <Legend />
+      {chartData.length > 0 && (
+        <ResponsiveContainer width="100%" height={400}>
+          <ComposedChart data={chartData} margin={{ top: 5, right: 30, left: 0, bottom: 25 }}>
+            <CartesianGrid strokeDasharray="3 3" />
+            <XAxis
+              dataKey="date"
+              tickFormatter={formatDateTick}
+              tick={{ fontSize: 12 }}
+              interval={Math.floor(chartData.length / 10)}
+            />
+            <YAxis yAxisId="left" />
+            <YAxis yAxisId="right" orientation="right" />
+            <Tooltip
+              formatter={(value) => (typeof value === 'number' ? value.toFixed(2) : value)}
+              labelFormatter={formatDateTick}
+              contentStyle={{ backgroundColor: '#10141f', border: '1px solid rgba(255, 255, 255, 0.08)' }}
+              labelStyle={{ color: '#f5f7fb' }}
+            />
+            <Legend />
 
-          <Line
-            yAxisId="left"
-            type="monotone"
-            dataKey="close"
-            stroke="#5da2ff"
-            name={priceName}
-            dot={false}
-            isAnimationActive={false}
-          />
+            <Line
+              yAxisId="left"
+              type="monotone"
+              dataKey="close"
+              stroke="#5da2ff"
+              name={priceName}
+              dot={false}
+              isAnimationActive={false}
+            />
 
-          <Scatter
-            yAxisId="left"
-            dataKey="longEntry"
-            fill="#7cf2d4"
-            name="Long Entry"
-            shape="triangle"
-            isAnimationActive={false}
-          />
+            <Scatter
+              yAxisId="left"
+              dataKey="longEntry"
+              fill="#7cf2d4"
+              name="Long Entry"
+              shape="triangle"
+              isAnimationActive={false}
+            />
 
-          <Scatter
-            yAxisId="left"
-            dataKey="shortEntry"
-            fill="#ffb86c"
-            name="Short Entry"
-            shape="wye"
-            isAnimationActive={false}
-          />
+            <Scatter
+              yAxisId="left"
+              dataKey="shortEntry"
+              fill="#ffb86c"
+              name="Short Entry"
+              shape="wye"
+              isAnimationActive={false}
+            />
 
-          <Scatter
-            yAxisId="left"
-            dataKey="longExit"
-            fill="#ff6b6b"
-            name="Long Exit"
-            shape="diamond"
-            isAnimationActive={false}
-          />
+            <Scatter
+              yAxisId="left"
+              dataKey="longExit"
+              fill="#ff6b6b"
+              name="Long Exit"
+              shape="diamond"
+              isAnimationActive={false}
+            />
 
-          <Scatter
-            yAxisId="left"
-            dataKey="shortExit"
-            fill="#ff4da6"
-            name="Short Exit"
-            shape="square"
-            isAnimationActive={false}
-          />
-        </ComposedChart>
-      </ResponsiveContainer>
+            <Scatter
+              yAxisId="left"
+              dataKey="shortExit"
+              fill="#ff4da6"
+              name="Short Exit"
+              shape="square"
+              isAnimationActive={false}
+            />
+          </ComposedChart>
+        </ResponsiveContainer>
+      )}
 
       {equityData.length > 0 && (
         <ResponsiveContainer width="100%" height={230}>
@@ -132,10 +139,22 @@ export default function BacktestChart({ data, trades, equityCurve, priceName = '
               type="monotone"
               dataKey="equity"
               stroke="#c792ea"
-              name="Equity"
+              name={equityName}
               dot={false}
               isAnimationActive={false}
             />
+            {hasBenchmark && (
+              <Line
+                type="monotone"
+                dataKey="benchmark"
+                stroke="#5da2ff"
+                strokeDasharray="4 4"
+                name="Buy & Hold"
+                dot={false}
+                isAnimationActive={false}
+                connectNulls
+              />
+            )}
           </LineChart>
         </ResponsiveContainer>
       )}
