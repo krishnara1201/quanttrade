@@ -42,7 +42,8 @@ class Strategy(Base):
     is_public = Column(Boolean, default=False)  # visibility
     backtests = relationship("BacktestResult", back_populates="strategy", cascade="all, delete-orphan")
     portfolio_backtests = relationship("PortfolioBacktestResult", back_populates="strategy", cascade="all, delete-orphan")
-    
+    walk_forward_backtests = relationship("WalkForwardBacktestResult", back_populates="strategy", cascade="all, delete-orphan")
+
 class MarketData(Base):
     __tablename__ = "market_data"
     id = Column(Integer, primary_key=True)
@@ -78,6 +79,7 @@ class BacktestResult(Base):
     trades = Column(JSON, default=[])  # List of trades executed, each with details (entry/exit, price, size)
     signals = Column(JSON, default=[])  # Per-bar {date, close, signal} series for charting
     equity_curve = Column(JSON, default=[])  # Per-bar {date, equity} mark-to-market series
+    benchmark_equity_curve = Column(JSON, default=[])  # Buy-and-hold {date, equity} reference series
     status = Column(String, default="pending")  # pending -> running -> success | failed
     error_message = Column(Text, nullable=True)
     logs = Column(Text, default='')  # Optional logs or error messages
@@ -100,8 +102,36 @@ class PortfolioBacktestResult(Base):
     allocations = Column(JSON, default=[])   # [{ticker, weight}] — normalized weights actually used
     results = Column(JSON, default={})       # aggregate portfolio metrics
     equity_curve = Column(JSON, default=[])  # aggregate portfolio {date, equity} series
+    benchmark_equity_curve = Column(JSON, default=[])  # aggregate buy-and-hold {date, equity} reference series
     per_ticker = Column(JSON, default={})    # {ticker: {allocated_capital, metrics, trades, signals, equity_curve}}
     status = Column(String, default="pending")  # pending -> running -> success | failed
+    error_message = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class WalkForwardBacktestResult(Base):
+    __tablename__ = "walk_forward_backtest_results"
+    id = Column(Integer, primary_key=True)
+    strategy_id = Column(Integer, ForeignKey("strategies.id"), nullable=False)
+    strategy = relationship("Strategy", back_populates="walk_forward_backtests")
+    ticker = Column(String, nullable=False)
+    start_date = Column(DateTime, nullable=False)
+    end_date = Column(DateTime, nullable=False)
+    test_window_days = Column(Integer, nullable=False)
+    initial_capital = Column(Float, nullable=False)
+    commission_pct = Column(Float, nullable=False)
+    slippage_pct = Column(Float, nullable=False)
+    allow_short = Column(Boolean, default=False, nullable=False)
+    stop_loss_pct = Column(Float, nullable=True)
+    take_profit_pct = Column(Float, nullable=True)
+    total_folds = Column(Integer, nullable=True)       # set once fold boundaries are computed
+    folds_completed = Column(Integer, default=0, nullable=False)  # incremented per fold, for progress polling
+    folds = Column(JSON, default=[])                    # [{fold_index, train_start, train_end, test_start, test_end, return_pct, num_trades}]
+    trades = Column(JSON, default=[])                   # pooled across all fold test windows, chronological
+    equity_curve = Column(JSON, default=[])              # stitched OOS curve, each row tagged fold_index
+    benchmark_equity_curve = Column(JSON, default=[])    # buy-and-hold over the same stitched period
+    results = Column(JSON, default={})                   # aggregate metrics, same field names as BacktestResult.results
+    status = Column(String, default="pending")           # pending -> running -> success | failed
     error_message = Column(Text, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
 
