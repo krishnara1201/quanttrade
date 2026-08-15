@@ -286,3 +286,66 @@ async def test_execute_backtest_persists_benchmark_equity_curve(session_factory,
     assert len(record.benchmark_equity_curve) == 5
     assert record.benchmark_equity_curve[0]["equity"] == pytest.approx(10000.0)
     assert record.benchmark_equity_curve[-1]["equity"] == pytest.approx(14000.0)
+
+
+@pytest.mark.asyncio
+async def test_run_walk_forward_endpoint_rejects_rules_mode_strategy(session_factory, seeded):
+    """`seeded`'s strategy is rules-mode (fast_ma/slow_ma) — walk-forward
+    should reject it with a 400, not attempt to enqueue anything."""
+    from fastapi import HTTPException
+    from routers.backtest import WalkForwardBacktestRequest, run_walk_forward_backtest_endpoint
+
+    async with session_factory() as db:
+        user = await _reload_user(session_factory, seeded["user_id"])
+        req = WalkForwardBacktestRequest(
+            strategy_id=seeded["strategy_id"], ticker="TEST",
+            start_date="2015-01-01", end_date="2020-01-01", test_window_days=180,
+        )
+        with pytest.raises(HTTPException) as exc_info:
+            await run_walk_forward_backtest_endpoint(req, db=db, user=user)
+        assert exc_info.value.status_code == 400
+        assert "custom-code strategy" in exc_info.value.detail
+
+
+@pytest.mark.asyncio
+async def test_run_walk_forward_endpoint_marks_row_failed_when_apply_async_raises(session_factory, seeded, monkeypatch):
+    """Same enqueue-failure contract as the other three async task types
+    (see routers/backtest.py and routers/data.py) — if the broker is
+    unreachable, the already-committed pending row is marked failed and the
+    endpoint raises a 503 instead of an opaque 500."""
+    import json
+    from fastapi import HTTPException
+    from sqlalchemy import select as _select
+    from database.models import Project, Strategy
+    from routers.backtest import WalkForwardBacktestRequest, run_walk_forward_backtest_endpoint, walk_forward_task
+
+    # seeded's own strategy is rules-mode (see the rejection test above) —
+    # build a sibling custom-code strategy in the same project so this test
+    # can exercise the enqueue-failure path instead of the mode check.
+    async with session_factory() as db:
+        user = await _reload_user(session_factory, seeded["user_id"])
+        proj_result = await db.execute(_select(Project).where(Project.owner_id == user.id))
+        project = proj_result.scalars().first()
+        strategy = Strategy(
+            name="ml", project_id=project.id,
+            parameters=json.dumps({"name": "ml", "mode": "custom_code"}),
+            code="def generate_signals(df):\n    return df['close'] * 0\n",
+        )
+        db.add(strategy)
+        await db.commit()
+        await db.refresh(strategy)
+
+    def broken_apply_async(*args, **kwargs):
+        raise ConnectionError("could not connect to redis")
+
+    monkeypatch.setattr(walk_forward_task, "apply_async", broken_apply_async)
+
+    async with session_factory() as db:
+        user = await _reload_user(session_factory, seeded["user_id"])
+        req = WalkForwardBacktestRequest(
+            strategy_id=strategy.id, ticker="TEST",
+            start_date="2015-01-01", end_date="2020-01-01", test_window_days=180,
+        )
+        with pytest.raises(HTTPException) as exc_info:
+            await run_walk_forward_backtest_endpoint(req, db=db, user=user)
+        assert exc_info.value.status_code == 503
