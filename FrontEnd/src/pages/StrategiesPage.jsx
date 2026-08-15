@@ -303,6 +303,19 @@ export default function StrategiesPage() {
           <div className="card" style={{ marginTop: '20px' }}>
             <h3>Run Backtest</h3>
             <form className="stack" onSubmit={handleRunBacktest}>
+              <label className="field" style={{ marginBottom: '8px' }}>
+                <span>Select Strategy</span>
+                <select
+                  value={selectedStrategyId || ''}
+                  onChange={(e) => setSelectedStrategyId(Number(e.target.value) || null)}
+                >
+                  <option value="">Choose a strategy...</option>
+                  {filtered.map((s) => (
+                    <option key={s.id} value={s.id}>{s.name}</option>
+                  ))}
+                </select>
+              </label>
+
               <div className="title-row" style={{ marginBottom: '8px' }}>
                 <button
                   type="button"
@@ -328,21 +341,14 @@ export default function StrategiesPage() {
                   Walk-forward
                 </button>
               </div>
+              {!isCustomCodeStrategy && (
+                <p className="muted" style={{ marginTop: '-4px', marginBottom: '8px', fontSize: '0.85em' }}>
+                  Walk-forward requires selecting a Custom Python Code strategy above
+                  {selectedStrategyId ? ' — the selected strategy uses the Visual Builder instead.' : '.'}
+                </p>
+              )}
 
               <div className="layout two-cols">
-                <label className="field">
-                  <span>Select Strategy</span>
-                  <select
-                    value={selectedStrategyId || ''}
-                    onChange={(e) => setSelectedStrategyId(Number(e.target.value) || null)}
-                  >
-                    <option value="">Choose a strategy...</option>
-                    {filtered.map((s) => (
-                      <option key={s.id} value={s.id}>{s.name}</option>
-                    ))}
-                  </select>
-                </label>
-
                 {(backtestMode === 'single' || backtestMode === 'walk_forward') && (
                   <label className="field">
                     <span>Ticker</span>
@@ -490,39 +496,10 @@ export default function StrategiesPage() {
                       <option value={12}>12 months</option>
                     </select>
                   </label>
-                  <details>
-                    <summary>Example strategy for walk-forward</summary>
-                    <pre className="code-editor" style={{ whiteSpace: 'pre-wrap' }}>
-{`from sklearn.linear_model import LogisticRegression
-
-def generate_signals(df):
-    df = df.copy()
-    df['return_1d'] = df['close'].pct_change()
-    df['sma_10'] = df['close'].rolling(10).mean()
-    df['sma_30'] = df['close'].rolling(30).mean()
-    df['momentum'] = df['close'] / df['close'].shift(10) - 1
-    df['target'] = (df['close'].shift(-1) > df['close']).astype(int)
-
-    features = ['return_1d', 'sma_10', 'sma_30', 'momentum']
-    train = df.dropna(subset=features + ['target'])
-
-    # Walk-forward calls this fresh each fold with a growing df --
-    # early folds may not have enough rows yet. Stay flat rather than
-    # fit on too little data.
-    if len(train) < 50:
-        return df['close'] * 0
-
-    model = LogisticRegression()
-    model.fit(train[features], train['target'])
-
-    predictable = df.dropna(subset=features)
-    preds = model.predict(predictable[features])  # 0/1
-
-    signal = df['close'] * 0
-    signal.loc[predictable.index] = preds * 2 - 1  # -> -1/1
-    return signal`}
-                    </pre>
-                  </details>
+                  <p className="muted" style={{ fontSize: '0.85em' }}>
+                    Looking for a strategy to test this with? The strategy creation page has an example
+                    walk-forward-ready custom-code strategy.
+                  </p>
                 </div>
               )}
 

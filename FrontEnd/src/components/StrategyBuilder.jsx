@@ -197,6 +197,39 @@ export default function StrategyBuilder({ onSave, onCancel }) {
             predicting trains on future data, so prefer an expanding/rolling window fit.
           </p>
           <CodeEditor value={code} onChange={setCode} />
+          <details style={{ marginTop: '12px' }}>
+            <summary>Example: walk-forward-ready strategy (LogisticRegression)</summary>
+            <pre className="code-editor" style={{ whiteSpace: 'pre-wrap' }}>
+{`from sklearn.linear_model import LogisticRegression
+
+def generate_signals(df):
+    df = df.copy()
+    df['return_1d'] = df['close'].pct_change()
+    df['sma_10'] = df['close'].rolling(10).mean()
+    df['sma_30'] = df['close'].rolling(30).mean()
+    df['momentum'] = df['close'] / df['close'].shift(10) - 1
+    df['target'] = (df['close'].shift(-1) > df['close']).astype(int)
+
+    features = ['return_1d', 'sma_10', 'sma_30', 'momentum']
+    train = df.dropna(subset=features + ['target'])
+
+    # Walk-forward calls this fresh each fold with a growing df --
+    # early folds may not have enough rows yet. Stay flat rather than
+    # fit on too little data.
+    if len(train) < 50:
+        return df['close'] * 0
+
+    model = LogisticRegression()
+    model.fit(train[features], train['target'])
+
+    predictable = df.dropna(subset=features)
+    preds = model.predict(predictable[features])  # 0/1
+
+    signal = df['close'] * 0
+    signal.loc[predictable.index] = preds * 2 - 1  # -> -1/1
+    return signal`}
+            </pre>
+          </details>
         </div>
       ) : (
         <>

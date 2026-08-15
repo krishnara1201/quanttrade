@@ -424,9 +424,9 @@ async def test_execute_walk_forward_fails_whole_run_naming_the_fold(session_fact
     assert loaded.folds_completed == 0
 
 
-# The literal example strategy shown to users in StrategiesPage.jsx's
-# collapsible "Example strategy for walk-forward" panel (walk-forward
-# toggle) — copied verbatim so this test exercises the exact code path a
+# The literal example strategy shown to users in StrategyBuilder.jsx's
+# custom-code section, under the collapsible "Example: walk-forward-ready
+# strategy" panel — copied verbatim so this test exercises the exact code path a
 # real user would paste in, not a simplified stand-in. Deliberately avoids
 # `import pandas`/`import numpy` (both disallowed in the sandbox) and only
 # uses `df`'s own methods, same as every other custom-code fixture in this
@@ -466,8 +466,8 @@ def generate_signals(df):
 @pytest_asyncio.fixture
 async def logistic_regression_strategy_seeded(session_factory):
     """User/project/custom-code strategy running the literal sklearn
-    LogisticRegression example shown in StrategiesPage.jsx's walk-forward
-    panel, plus 5 years of daily bars — enough for multiple expanding
+    LogisticRegression example shown in StrategyBuilder.jsx's custom-code
+    section, plus 5 years of daily bars — enough for multiple expanding
     folds. Prices oscillate (not flat/monotonic) so the model actually has
     varying features/targets to fit on each fold."""
     async with session_factory() as db:
