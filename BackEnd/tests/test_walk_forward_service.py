@@ -314,6 +314,54 @@ async def test_execute_walk_forward_end_to_end_compounds_capital_and_tracks_prog
     assert "sharpe_ratio" in loaded.results
 
 
+@pytest.mark.asyncio
+async def test_execute_walk_forward_second_fold_starts_from_first_folds_ending_capital(session_factory, custom_code_strategy_seeded):
+    """Numerically pins the capital-compounding invariant: fold 1's starting
+    capital must equal fold 0's actual ending equity, not
+    record.initial_capital. A regression that reset
+    fold_start_capital = record.initial_capital every iteration (instead of
+    carrying running_capital forward) would still pass every structural
+    assertion in the end-to-end test above -- this test exists specifically
+    to falsify that regression."""
+    async with session_factory() as db:
+        user = await _reload_user(session_factory, custom_code_strategy_seeded["user_id"])
+        record = await walk_forward_service.create_pending_walk_forward_backtest(
+            custom_code_strategy_seeded["custom_code_strategy_id"], "AAPL",
+            "2015-01-01", "2020-01-01", 180, 10000.0, 0.1, 0.05, db, user,
+        )
+        await walk_forward_service.execute_walk_forward(record.id, db)
+
+    async with session_factory() as db:
+        result = await db.execute(select(WalkForwardBacktestResult).where(WalkForwardBacktestResult.id == record.id))
+        loaded = result.scalars().first()
+
+    assert loaded.status == "success"
+    fold0_return_pct = loaded.folds[0]["return_pct"]
+    # Sanity check: the oscillating-price fixture actually trades in fold 0,
+    # so its return isn't trivially zero -- otherwise this test couldn't
+    # distinguish "compounds correctly" from "resets every fold".
+    assert fold0_return_pct != pytest.approx(0.0, abs=1e-9)
+
+    expected_fold1_start_capital = loaded.initial_capital * (1 + fold0_return_pct / 100)
+    # If this equaled initial_capital, fold 0 would have to have had exactly
+    # 0% return -- already ruled out above, so this is a redundant but
+    # cheap belt-and-suspenders check that the two quantities really differ.
+    assert expected_fold1_start_capital != pytest.approx(loaded.initial_capital, rel=1e-6)
+
+    fold1_points = [p for p in loaded.equity_curve if p["fold_index"] == 1]
+    assert fold1_points, "fold 1 should have produced equity-curve points"
+    first_fold1_equity = fold1_points[0]["equity"]
+
+    # The first equity point of fold 1 is computed from fold 1's starting
+    # cash (fold_start_capital = running_capital carried over from fold 0)
+    # possibly adjusted by a same-bar trade's commission/slippage -- hence
+    # approx rather than exact equality.
+    assert first_fold1_equity == pytest.approx(expected_fold1_start_capital, rel=0.05)
+    # And directly rules out the reset-to-initial-capital regression: fold
+    # 1's first equity point must NOT equal the original initial_capital.
+    assert first_fold1_equity != pytest.approx(loaded.initial_capital, rel=1e-6)
+
+
 @pytest_asyncio.fixture
 async def broken_custom_code_strategy_seeded(session_factory):
     """A custom-code strategy whose generate_signals() always raises —
