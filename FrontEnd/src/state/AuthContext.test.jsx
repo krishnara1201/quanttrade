@@ -1,6 +1,6 @@
-import React, { useEffect } from 'react';
+import React from 'react';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen, waitFor, act, fireEvent } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { AuthProvider, useAuth } from './AuthContext.jsx';
 import client from '../api/client.js';
@@ -14,10 +14,15 @@ function fakeJwt(payload) {
   return `${header}.${body}.signature`;
 }
 
+function futureExp(seconds) {
+  return Math.floor(Date.now() / 1000) + seconds;
+}
+
 function TestConsumer() {
-  const { isAuthenticated, profile, error, login, register, logout } = useAuth();
+  const { isAuthenticated, bootstrapping, profile, error, login, register, logout } = useAuth();
   return (
     <div>
+      <div data-testid="bootstrapping">{String(bootstrapping)}</div>
       <div data-testid="authed">{String(isAuthenticated)}</div>
       <div data-testid="email">{profile?.email ?? ''}</div>
       <div data-testid="error">{error}</div>
@@ -32,51 +37,48 @@ function TestConsumer() {
 
 describe('AuthProvider', () => {
   beforeEach(() => {
-    localStorage.clear();
     vi.clearAllMocks();
+    authApi.refresh.mockRejectedValue(new Error('no session'));
   });
 
   afterEach(() => {
-    localStorage.clear();
+    vi.useRealTimers();
   });
 
-  it('attaches the Authorization header synchronously during render, before any child mount effect fires', () => {
-    const token = fakeJwt({ sub: 'trader@desk.com', user_id: 7 });
-    localStorage.setItem('quanttrade.jwt', token);
-
-    const seenHeaders = [];
-    function Probe() {
-      // Runs as a child mount-time effect, mirroring pages like ProjectsPage
-      // that fire their initial data fetch in their own useEffect(() => {...}, []).
-      // React fires child effects before parent effects, so this only sees the
-      // header if AuthProvider attached it synchronously during render.
-      useEffect(() => {
-        seenHeaders.push(client.defaults.headers.common.Authorization);
-      }, []);
-      return null;
-    }
-
-    render(
-      <AuthProvider>
-        <Probe />
-      </AuthProvider>
-    );
-
-    expect(seenHeaders).toEqual([`Bearer ${token}`]);
-  });
-
-  it('has no Authorization header when there is no stored token', () => {
+  it('starts bootstrapping true and attempts a silent refresh on mount', async () => {
     render(
       <AuthProvider>
         <TestConsumer />
       </AuthProvider>
     );
 
-    expect(client.defaults.headers.common.Authorization).toBeUndefined();
+    expect(screen.getByTestId('bootstrapping')).toHaveTextContent('true');
+    await waitFor(() => expect(screen.getByTestId('bootstrapping')).toHaveTextContent('false'));
+    expect(authApi.refresh).toHaveBeenCalledTimes(1);
+    expect(screen.getByTestId('authed')).toHaveTextContent('false');
   });
 
-  it('logs in successfully, decodes the profile, and persists the token', async () => {
-    authApi.login.mockResolvedValue({ access_token: fakeJwt({ sub: 'trader@desk.com', user_id: 1 }) });
+  it('rehydrates an authenticated session when the silent refresh succeeds', async () => {
+    authApi.refresh.mockResolvedValue({
+      access_token: fakeJwt({ sub: 'trader@desk.com', user_id: 7, exp: futureExp(900) }),
+    });
+
+    render(
+      <AuthProvider>
+        <TestConsumer />
+      </AuthProvider>
+    );
+
+    await waitFor(() => expect(screen.getByTestId('bootstrapping')).toHaveTextContent('false'));
+    expect(screen.getByTestId('authed')).toHaveTextContent('true');
+    expect(screen.getByTestId('email')).toHaveTextContent('trader@desk.com');
+    expect(client.defaults.headers.common.Authorization).toMatch(/^Bearer /);
+  });
+
+  it('logs in successfully and decodes the profile, without touching localStorage', async () => {
+    authApi.login.mockResolvedValue({
+      access_token: fakeJwt({ sub: 'trader@desk.com', user_id: 1, exp: futureExp(900) }),
+    });
     const user = userEvent.setup();
 
     render(
@@ -84,13 +86,14 @@ describe('AuthProvider', () => {
         <TestConsumer />
       </AuthProvider>
     );
+    await waitFor(() => expect(screen.getByTestId('bootstrapping')).toHaveTextContent('false'));
 
     await user.click(screen.getByText('login'));
 
     await waitFor(() => expect(screen.getByTestId('authed')).toHaveTextContent('true'));
     expect(screen.getByTestId('email')).toHaveTextContent('trader@desk.com');
-    expect(localStorage.getItem('quanttrade.jwt')).toBeTruthy();
     expect(client.defaults.headers.common.Authorization).toMatch(/^Bearer /);
+    expect(localStorage.getItem('quanttrade.jwt')).toBeNull();
   });
 
   it('surfaces the backend error message and stays unauthenticated on failed login', async () => {
@@ -102,17 +105,19 @@ describe('AuthProvider', () => {
         <TestConsumer />
       </AuthProvider>
     );
+    await waitFor(() => expect(screen.getByTestId('bootstrapping')).toHaveTextContent('false'));
 
     await user.click(screen.getByText('login'));
 
     await waitFor(() => expect(screen.getByTestId('error')).toHaveTextContent('Invalid credentials'));
     expect(screen.getByTestId('authed')).toHaveTextContent('false');
-    expect(localStorage.getItem('quanttrade.jwt')).toBeNull();
   });
 
   it('registers then logs in automatically on success', async () => {
     authApi.register.mockResolvedValue({ id: 1 });
-    authApi.login.mockResolvedValue({ access_token: fakeJwt({ sub: 'ada@desk.com', user_id: 2 }) });
+    authApi.login.mockResolvedValue({
+      access_token: fakeJwt({ sub: 'ada@desk.com', user_id: 2, exp: futureExp(900) }),
+    });
     const user = userEvent.setup();
 
     render(
@@ -120,6 +125,7 @@ describe('AuthProvider', () => {
         <TestConsumer />
       </AuthProvider>
     );
+    await waitFor(() => expect(screen.getByTestId('bootstrapping')).toHaveTextContent('false'));
 
     await user.click(screen.getByText('register'));
 
@@ -128,8 +134,11 @@ describe('AuthProvider', () => {
     expect(authApi.login).toHaveBeenCalledWith('ada@desk.com', 'pw');
   });
 
-  it('clears the token, profile, and Authorization header on logout', async () => {
-    authApi.login.mockResolvedValue({ access_token: fakeJwt({ sub: 'trader@desk.com', user_id: 1 }) });
+  it('calls the backend logout endpoint and clears the session', async () => {
+    authApi.login.mockResolvedValue({
+      access_token: fakeJwt({ sub: 'trader@desk.com', user_id: 1, exp: futureExp(900) }),
+    });
+    authApi.logout.mockResolvedValue();
     const user = userEvent.setup();
 
     render(
@@ -137,6 +146,7 @@ describe('AuthProvider', () => {
         <TestConsumer />
       </AuthProvider>
     );
+    await waitFor(() => expect(screen.getByTestId('bootstrapping')).toHaveTextContent('false'));
 
     await user.click(screen.getByText('login'));
     await waitFor(() => expect(screen.getByTestId('authed')).toHaveTextContent('true'));
@@ -144,7 +154,64 @@ describe('AuthProvider', () => {
     await user.click(screen.getByText('logout'));
 
     await waitFor(() => expect(screen.getByTestId('authed')).toHaveTextContent('false'));
-    expect(localStorage.getItem('quanttrade.jwt')).toBeNull();
+    expect(authApi.logout).toHaveBeenCalledTimes(1);
     expect(client.defaults.headers.common.Authorization).toBeUndefined();
+  });
+
+  it('clears the session locally even if the backend logout call fails', async () => {
+    authApi.login.mockResolvedValue({
+      access_token: fakeJwt({ sub: 'trader@desk.com', user_id: 1, exp: futureExp(900) }),
+    });
+    authApi.logout.mockRejectedValue(new Error('network error'));
+    const user = userEvent.setup();
+
+    render(
+      <AuthProvider>
+        <TestConsumer />
+      </AuthProvider>
+    );
+    await waitFor(() => expect(screen.getByTestId('bootstrapping')).toHaveTextContent('false'));
+
+    await user.click(screen.getByText('login'));
+    await waitFor(() => expect(screen.getByTestId('authed')).toHaveTextContent('true'));
+
+    await user.click(screen.getByText('logout'));
+
+    await waitFor(() => expect(screen.getByTestId('authed')).toHaveTextContent('false'));
+  });
+
+  it('proactively refreshes the token before it expires', async () => {
+    vi.useFakeTimers();
+    authApi.refresh.mockRejectedValueOnce(new Error('no session')); // the bootstrap call
+    authApi.login.mockResolvedValue({
+      access_token: fakeJwt({ sub: 'trader@desk.com', user_id: 1, exp: futureExp(100) }),
+    });
+
+    render(
+      <AuthProvider>
+        <TestConsumer />
+      </AuthProvider>
+    );
+    await act(async () => {
+      await vi.runOnlyPendingTimersAsync();
+    });
+    expect(screen.getByTestId('bootstrapping')).toHaveTextContent('false');
+
+    authApi.refresh.mockResolvedValueOnce({
+      access_token: fakeJwt({ sub: 'trader@desk.com', user_id: 1, exp: futureExp(1000) }),
+    });
+
+    await act(async () => {
+      fireEvent.click(screen.getByText('login'));
+      await vi.runOnlyPendingTimersAsync();
+    });
+    expect(screen.getByTestId('authed')).toHaveTextContent('true');
+    expect(authApi.refresh).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(81_000); // > 80% of the 100s-lifetime token
+    });
+
+    expect(authApi.refresh).toHaveBeenCalledTimes(2);
   });
 });

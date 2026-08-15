@@ -1,49 +1,107 @@
-import React, { createContext, useContext, useEffect, useMemo, useState } from 'react';
+import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import * as authApi from '../api/auth.js';
-import { setAuthToken } from '../api/client.js';
+import { setAuthToken, setRefreshHandler } from '../api/client.js';
 
 const AuthContext = createContext(null);
 
-const storageKey = 'quanttrade.jwt';
+const PROACTIVE_REFRESH_RATIO = 0.8;
 
 function decodeJwt(token) {
   try {
     const payload = token.split('.')[1];
     const decoded = JSON.parse(atob(payload));
-    return { email: decoded.sub, userId: decoded.user_id };
+    return { email: decoded.sub, userId: decoded.user_id, exp: decoded.exp };
   } catch (err) {
     return null;
   }
 }
 
 export function AuthProvider({ children }) {
-  const [token, setToken] = useState(() => localStorage.getItem(storageKey) || '');
-  const [profile, setProfile] = useState(() => decodeJwt(localStorage.getItem(storageKey) || '') || null);
+  const [token, setToken] = useState('');
+  const [profile, setProfile] = useState(null);
   const [loading, setLoading] = useState(false);
+  const [bootstrapping, setBootstrapping] = useState(true);
   const [error, setError] = useState('');
+  const refreshTimerRef = useRef(null);
 
-  // Applied synchronously during render (not in an effect) so the axios client
-  // has the Authorization header attached before any child's mount-time effect
-  // (e.g. a page's initial data fetch) can fire a request without it — child
-  // effects run before parent effects on mount, so a useEffect here is too late.
+  // Applied synchronously during render (not in an effect) so the axios
+  // client has the Authorization header attached before any child's
+  // mount-time effect can fire a request without it — see the
+  // child-effects-run-before-parent-effects note this fixed previously.
+  // The access token now lives only in this in-memory state (never
+  // localStorage); ProtectedRoute gates children on `bootstrapping` so
+  // mount-time fetches never race the initial silent refresh below.
   setAuthToken(token || null);
 
-  useEffect(() => {
-    if (token) {
-      localStorage.setItem(storageKey, token);
-      setProfile(decodeJwt(token));
-    } else {
-      localStorage.removeItem(storageKey);
-      setProfile(null);
+  const applyToken = useCallback((accessToken) => {
+    setToken(accessToken);
+    setProfile(decodeJwt(accessToken));
+  }, []);
+
+  const clearSession = useCallback(() => {
+    setToken('');
+    setProfile(null);
+    if (refreshTimerRef.current) {
+      clearTimeout(refreshTimerRef.current);
+      refreshTimerRef.current = null;
     }
-  }, [token]);
+  }, []);
+
+  const silentRefresh = useCallback(async () => {
+    try {
+      const resp = await authApi.refresh();
+      applyToken(resp.access_token);
+      return resp.access_token;
+    } catch (err) {
+      clearSession();
+      return null;
+    }
+  }, [applyToken, clearSession]);
+
+  useEffect(() => {
+    setRefreshHandler(silentRefresh);
+  }, [silentRefresh]);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      await silentRefresh();
+      if (!cancelled) setBootstrapping(false);
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // Runs once on mount only — silentRefresh's identity is stable across
+    // renders (see its useCallback deps), so this is not missing a dep.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    if (refreshTimerRef.current) {
+      clearTimeout(refreshTimerRef.current);
+      refreshTimerRef.current = null;
+    }
+    if (!profile?.exp) return undefined;
+
+    const nowSeconds = Date.now() / 1000;
+    const lifetimeSeconds = profile.exp - nowSeconds;
+    const delayMs = Math.max(lifetimeSeconds * PROACTIVE_REFRESH_RATIO, 0) * 1000;
+
+    refreshTimerRef.current = setTimeout(() => {
+      silentRefresh();
+    }, delayMs);
+
+    return () => {
+      if (refreshTimerRef.current) clearTimeout(refreshTimerRef.current);
+    };
+  }, [profile, silentRefresh]);
 
   const login = async (email, password) => {
     setLoading(true);
     setError('');
     try {
       const resp = await authApi.login(email, password);
-      setToken(resp.access_token);
+      applyToken(resp.access_token);
       return true;
     } catch (err) {
       setError(err?.response?.data?.detail || err?.response?.data?.error || 'Login failed');
@@ -68,18 +126,27 @@ export function AuthProvider({ children }) {
     }
   };
 
-  const logout = () => setToken('');
+  const logout = async () => {
+    try {
+      await authApi.logout();
+    } catch (err) {
+      // Best-effort: clear the local session even if the server call fails
+      // (e.g. network error, or the refresh cookie was already invalid).
+    }
+    clearSession();
+  };
 
   const value = useMemo(() => ({
     token,
     profile,
     isAuthenticated: Boolean(token),
     loading,
+    bootstrapping,
     error,
     login,
     register,
     logout,
-  }), [token, profile, loading, error]);
+  }), [token, profile, loading, bootstrapping, error]);
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 }
