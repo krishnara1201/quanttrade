@@ -6,6 +6,7 @@ from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
 
 from database.models import Base, User
 from routers import auth as auth_router
+from routers.auth import UserCreate
 
 
 @pytest_asyncio.fixture
@@ -226,6 +227,19 @@ async def test_logout_revokes_the_refresh_token_and_clears_the_cookie(session_fa
             response=Response(), db=db,
         )
     assert result.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_register_response_does_not_leak_password_hash(session_factory):
+    async with session_factory() as db:
+        result = await auth_router.create_user(
+            user_data=UserCreate(name="Bea", email="bea@example.com", password="correct-horse-battery-staple"),
+            db=db,
+        )
+
+    dumped = result.model_dump() if hasattr(result, "model_dump") else result
+    assert "password_hash" not in dumped
+    assert dumped["email"] == "bea@example.com"
 
 
 def test_ip_rate_limiter_allows_requests_up_to_the_limit():

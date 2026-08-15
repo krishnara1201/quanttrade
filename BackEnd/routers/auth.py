@@ -1,5 +1,6 @@
 import threading
 from datetime import datetime, timedelta
+from typing import Optional
 
 import bcrypt
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
@@ -79,6 +80,15 @@ class Token(BaseModel):
     token_type: str
 
 
+class UserOut(BaseModel):
+    id: int
+    name: str
+    email: EmailStr
+    created_at: Optional[datetime] = None
+
+    model_config = {"from_attributes": True}
+
+
 @router.post("/")
 async def create_user(user_data: UserCreate, db: AsyncSession = Depends(get_db)):
     # Use validated data dict to avoid passing strings for timestamps or other unexpected fields
@@ -104,7 +114,7 @@ async def create_user(user_data: UserCreate, db: AsyncSession = Depends(get_db))
         await db.rollback()
         raise HTTPException(status_code=400, detail="email already exists")
 
-    return db_user
+    return UserOut.from_orm(db_user)
 
 
 @router.post("/token")
