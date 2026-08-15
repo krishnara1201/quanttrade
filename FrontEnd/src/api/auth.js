@@ -18,3 +18,15 @@ export async function login(email, password) {
   }
   return data;
 }
+
+export async function refresh() {
+  const { data } = await client.post('/api/auth/refresh');
+  if (!data.access_token) {
+    throw new Error('Token not returned');
+  }
+  return data;
+}
+
+export async function logout() {
+  await client.post('/api/auth/logout');
+}
