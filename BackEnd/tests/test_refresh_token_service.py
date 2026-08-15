@@ -81,12 +81,24 @@ async def test_rotate_expired_token_raises_value_error(session_factory, user_id)
 @pytest.mark.asyncio
 async def test_replaying_an_already_rotated_token_revokes_every_live_token_for_that_user(session_factory, user_id):
     async with session_factory() as db:
-        raw_token, _ = await svc.create_refresh_token(db, user_id, expire_days=7)
+        raw_token, old_record = await svc.create_refresh_token(db, user_id, expire_days=7)
         await db.commit()
+        old_id = old_record.id
 
     async with session_factory() as db:
         _, new_record = await svc.rotate_refresh_token(db, raw_token, expire_days=7)
         new_id = new_record.id
+
+    # Backdate the rotated-away record's revoked_at to outside the grace
+    # window so this test deterministically exercises the "old replay"
+    # path (a realistic stolen/replayed token) rather than depending on
+    # real wall-clock timing between the two rotate_refresh_token calls
+    # above, which would otherwise still be within the grace window.
+    async with session_factory() as db:
+        result = await db.execute(select(RefreshToken).where(RefreshToken.id == old_id))
+        old = result.scalars().first()
+        old.revoked_at = datetime.utcnow() - timedelta(seconds=svc.REUSE_GRACE_WINDOW_SECONDS + 30)
+        await db.commit()
 
     async with session_factory() as db:
         with pytest.raises(svc.RefreshTokenReuseDetected):
@@ -96,6 +108,51 @@ async def test_replaying_an_already_rotated_token_revokes_every_live_token_for_t
         result = await db.execute(select(RefreshToken).where(RefreshToken.id == new_id))
         still_valid_looking = result.scalars().first()
     assert still_valid_looking.revoked_at is not None
+
+
+@pytest.mark.asyncio
+async def test_replaying_a_token_rotated_within_the_grace_window_raises_plain_value_error_without_revoking_others(session_factory, user_id):
+    # Simulates a benign cross-tab race: Tab A rotates T0 -> T1 (success).
+    # Tab B then presents T0 again a moment later, before its cookie jar
+    # picked up T1. This must be rejected (the stale request shouldn't
+    # succeed) but must NOT nuke T1 or any other live session for the user.
+    async with session_factory() as db:
+        raw_token, _ = await svc.create_refresh_token(db, user_id, expire_days=7)
+        await db.commit()
+
+    # A second, independent live token for the same user (e.g. another
+    # device/session) that must survive the benign race untouched.
+    async with session_factory() as db:
+        other_raw_token, other_record = await svc.create_refresh_token(db, user_id, expire_days=7)
+        await db.commit()
+        other_id = other_record.id
+
+    async with session_factory() as db:
+        new_raw_token, _ = await svc.rotate_refresh_token(db, raw_token, expire_days=7)
+
+    # Immediate replay of the now-rotated-away raw_token — well within the
+    # 30s grace window given how fast this test runs.
+    async with session_factory() as db:
+        with pytest.raises(ValueError) as exc_info:
+            await svc.rotate_refresh_token(db, raw_token, expire_days=7)
+    assert not isinstance(exc_info.value, svc.RefreshTokenReuseDetected)
+
+    # The legitimate successor token from Tab A's rotation must still work.
+    async with session_factory() as db:
+        result = await db.execute(select(RefreshToken).where(RefreshToken.token_hash == svc._hash_token(new_raw_token)))
+        successor = result.scalars().first()
+    assert successor.revoked_at is None
+
+    # The unrelated, separately-created live token for this user must also
+    # still be untouched.
+    async with session_factory() as db:
+        result = await db.execute(select(RefreshToken).where(RefreshToken.id == other_id))
+        other = result.scalars().first()
+    assert other.revoked_at is None
+
+    # And it's genuinely still usable.
+    async with session_factory() as db:
+        await svc.rotate_refresh_token(db, other_raw_token, expire_days=7)  # must not raise
 
 
 @pytest.mark.asyncio

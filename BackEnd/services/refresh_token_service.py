@@ -7,6 +7,20 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from database.models import RefreshToken
 
+# Cross-tab races: two tabs of the same browser can both hold the same
+# refresh-token cookie value and both fire a refresh request before the
+# browser's cookie jar has propagated the rotation from the first request's
+# response. The second request then presents an already-rotated token,
+# which is indistinguishable at the DB layer from a genuine replay of a
+# stolen token — except by how recently the rotation happened. A real
+# attacker replay realistically arrives well after the legitimate rotation
+# (the token had to be captured and reused later); a sibling-tab race
+# arrives within milliseconds to a couple seconds. REUSE_GRACE_WINDOW_SECONDS
+# draws that line: a revocation younger than this is treated as a benign
+# race (reject just this one request, no mass revocation); older is treated
+# as a real reuse-detected event (revoke every live token for the user).
+REUSE_GRACE_WINDOW_SECONDS = 30
+
 
 class RefreshTokenReuseDetected(Exception):
     """Raised when a refresh token that was already rotated away is
@@ -47,6 +61,11 @@ async def rotate_refresh_token(db: AsyncSession, raw_token: str, expire_days: in
         raise ValueError("unknown refresh token")
 
     if record.revoked_at is not None:
+        if (datetime.utcnow() - record.revoked_at).total_seconds() < REUSE_GRACE_WINDOW_SECONDS:
+            # Likely a sibling-tab race against a token we ourselves just
+            # rotated, not theft — reject this request only, don't nuke
+            # every other live session for the user.
+            raise ValueError("refresh token already rotated")
         await revoke_all_for_user(db, record.user_id)
         raise RefreshTokenReuseDetected(record.user_id)
 
