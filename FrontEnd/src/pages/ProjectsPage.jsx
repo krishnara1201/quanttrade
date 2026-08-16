@@ -7,6 +7,7 @@ export default function ProjectsPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [form, setForm] = useState({ name: '', description: '' });
+  const [deletingId, setDeletingId] = useState(null);
 
   const load = async () => {
     setLoading(true);
@@ -33,6 +34,21 @@ export default function ProjectsPage() {
       setForm({ name: '', description: '' });
     } catch (err) {
       setError(err?.response?.data?.detail || 'Could not create project');
+    }
+  };
+
+  const handleDelete = async (project) => {
+    if (!window.confirm(`Delete project "${project.name}"? This also deletes all of its strategies and backtests. This cannot be undone.`)) {
+      return;
+    }
+    setDeletingId(project.id);
+    try {
+      await projectsApi.deleteProject(project.id);
+      setProjects((prev) => prev.filter((p) => p.id !== project.id));
+    } catch (err) {
+      setError(err?.response?.data?.detail || 'Could not delete project');
+    } finally {
+      setDeletingId(null);
     }
   };
 
@@ -80,7 +96,16 @@ export default function ProjectsPage() {
                   </div>
                   <p className="muted">{project.description || 'No description'}</p>
                 </div>
-                <Link to={`/projects/${project.id}/strategies`} className="ghost-btn">Strategies</Link>
+                <div className="row-actions">
+                  <Link to={`/projects/${project.id}/strategies`} className="ghost-btn">Strategies</Link>
+                  <button
+                    className="danger-btn"
+                    onClick={() => handleDelete(project)}
+                    disabled={deletingId === project.id}
+                  >
+                    {deletingId === project.id ? 'Deleting...' : 'Delete'}
+                  </button>
+                </div>
               </div>
             ))}
           </div>

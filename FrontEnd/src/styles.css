@@ -122,6 +122,33 @@ a {
   border: 1px solid var(--border);
 }
 
+.danger-btn {
+  background: transparent;
+  color: var(--danger);
+  border: 1px solid var(--danger);
+  border-radius: 12px;
+  padding: 12px 16px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: transform 0.08s ease, background 0.2s ease, color 0.2s ease;
+}
+
+.danger-btn:hover {
+  background: var(--danger);
+  color: #04111b;
+}
+
+.danger-btn:active {
+  transform: translateY(1px);
+}
+
+.row-actions {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+  flex-wrap: wrap;
+}
+
 .page {
   width: min(1200px, 94vw);
   margin: 32px auto 80px;
@@ -276,6 +303,23 @@ h1, h2, h3 {
 .muted {
   color: var(--muted);
   margin: 4px 0 0;
+}
+
+.detail-grid {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 4px 12px;
+  margin: 0;
+}
+
+.detail-grid dt {
+  color: var(--muted);
+  font-size: 0.85em;
+}
+
+.detail-grid dd {
+  margin: 0;
+  word-break: break-word;
 }
 
 .layout.two-cols {

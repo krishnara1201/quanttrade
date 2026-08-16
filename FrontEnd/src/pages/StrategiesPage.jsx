@@ -4,6 +4,7 @@ import * as strategiesApi from '../api/strategies.js';
 import * as backtestApi from '../api/backtest.js';
 import * as dataApi from '../api/data.js';
 import StrategyBuilder from '../components/StrategyBuilder.jsx';
+import CodeEditor from '../components/CodeEditor.jsx';
 
 function toDateInputValue(isoString) {
   return isoString ? isoString.slice(0, 10) : '';
@@ -36,6 +37,11 @@ export default function StrategiesPage() {
   const [error, setError] = useState('');
   const [showBuilder, setShowBuilder] = useState(false);
   const [selectedStrategyId, setSelectedStrategyId] = useState(null);
+  const [editingStrategyId, setEditingStrategyId] = useState(null);
+  const [editForm, setEditForm] = useState({ name: '', status: 'draft', code: '' });
+  const [editSaving, setEditSaving] = useState(false);
+  const [deletingStrategyId, setDeletingStrategyId] = useState(null);
+  const [viewingStrategyId, setViewingStrategyId] = useState(null);
   const [backtestForm, setBacktestForm] = useState({
     ticker: '',
     startDate: '2023-01-01',
@@ -169,6 +175,74 @@ export default function StrategiesPage() {
     }
   };
 
+  const parseStrategyConfig = (s) => {
+    try {
+      return typeof s.parameters === 'string' ? JSON.parse(s.parameters) : (s.parameters || {});
+    } catch {
+      return { name: s.name };
+    }
+  };
+
+  const startEditStrategy = (s) => {
+    const config = parseStrategyConfig(s);
+    setEditForm({
+      name: s.name,
+      status: s.status || 'draft',
+      code: config.mode === 'custom_code' ? (s.code || '') : '',
+    });
+    setEditingStrategyId(s.id);
+    setViewingStrategyId(null);
+  };
+
+  const cancelEditStrategy = () => {
+    setEditingStrategyId(null);
+  };
+
+  const toggleViewStrategy = (s) => {
+    setEditingStrategyId(null);
+    setViewingStrategyId((prev) => (prev === s.id ? null : s.id));
+  };
+
+  const handleSaveEditStrategy = async (s) => {
+    setError('');
+    setEditSaving(true);
+    try {
+      const config = parseStrategyConfig(s);
+      const isCustomCode = config.mode === 'custom_code';
+      const payload = {
+        name: editForm.name,
+        status: editForm.status,
+        parameters: JSON.stringify({ ...config, name: editForm.name }),
+        ...(isCustomCode ? { code: editForm.code } : {}),
+      };
+      const updated = await strategiesApi.updateStrategy(s.id, payload);
+      setStrategies((prev) => prev.map((item) => (item.id === s.id ? updated : item)));
+      setEditingStrategyId(null);
+    } catch (err) {
+      setError(err?.response?.data?.detail || 'Could not update strategy');
+    } finally {
+      setEditSaving(false);
+    }
+  };
+
+  const handleDeleteStrategy = async (s) => {
+    if (!window.confirm(`Delete strategy "${s.name}"? This also deletes its backtest results. This cannot be undone.`)) {
+      return;
+    }
+    setDeletingStrategyId(s.id);
+    try {
+      await strategiesApi.deleteStrategy(s.id);
+      setStrategies((prev) => prev.filter((item) => item.id !== s.id));
+      if (selectedStrategyId === s.id) setSelectedStrategyId(null);
+      if (editingStrategyId === s.id) setEditingStrategyId(null);
+      if (viewingStrategyId === s.id) setViewingStrategyId(null);
+    } catch (err) {
+      setError(err?.response?.data?.detail || 'Could not delete strategy');
+    } finally {
+      setDeletingStrategyId(null);
+    }
+  };
+
   const handleRunBacktest = async (e) => {
     e.preventDefault();
     if (!selectedStrategyId) {
@@ -267,31 +341,145 @@ export default function StrategiesPage() {
               {!loading && !filtered.length && <p>No strategies for this project yet.</p>}
               <div className="list">
                 {filtered.map((s) => {
-                  let config;
-                  try {
-                    config = typeof s.parameters === 'string' ? JSON.parse(s.parameters) : s.parameters;
-                  } catch {
-                    config = { name: s.name };
-                  }
+                  const config = parseStrategyConfig(s);
+                  const isEditing = editingStrategyId === s.id;
+                  const isViewing = viewingStrategyId === s.id;
                   return (
-                    <div key={s.id} className="list-row">
-                      <div style={{ flex: 1 }}>
-                        <div className="title-row">
-                          <span className="title">{s.name}</span>
-                          <span className="chip">{s.status || 'draft'}</span>
+                    <div key={s.id} className="list-row" style={{ flexDirection: 'column', alignItems: 'stretch' }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', gap: '14px' }}>
+                        <div style={{ flex: 1 }}>
+                          <div className="title-row">
+                            <span className="title">{s.name}</span>
+                            <span className="chip">{s.status || 'draft'}</span>
+                          </div>
+                          <p className="muted">
+                            {config.mode === 'custom_code'
+                              ? 'Custom Python strategy'
+                              : (
+                                <>
+                                  {config.rules?.entry && `Entry: ${config.rules.entry}`}
+                                  {config.rules?.exit && ` • Exit: ${config.rules.exit}`}
+                                </>
+                              )}
+                          </p>
                         </div>
-                        <p className="muted">
-                          {config.mode === 'custom_code'
-                            ? 'Custom Python strategy'
-                            : (
-                              <>
-                                {config.rules?.entry && `Entry: ${config.rules.entry}`}
-                                {config.rules?.exit && ` • Exit: ${config.rules.exit}`}
-                              </>
-                            )}
-                        </p>
+                        <div className="row-actions">
+                          <Link to={`/strategies/${s.id}/backtest`} className="ghost-btn">Results</Link>
+                          <button
+                            type="button"
+                            className="ghost-btn"
+                            onClick={() => toggleViewStrategy(s)}
+                          >
+                            {isViewing ? 'Close' : 'View'}
+                          </button>
+                          <button
+                            type="button"
+                            className="ghost-btn"
+                            onClick={() => (isEditing ? cancelEditStrategy() : startEditStrategy(s))}
+                          >
+                            {isEditing ? 'Close' : 'Edit'}
+                          </button>
+                          <button
+                            type="button"
+                            className="danger-btn"
+                            onClick={() => handleDeleteStrategy(s)}
+                            disabled={deletingStrategyId === s.id}
+                          >
+                            {deletingStrategyId === s.id ? 'Deleting...' : 'Delete'}
+                          </button>
+                        </div>
                       </div>
-                      <Link to={`/strategies/${s.id}/backtest`} className="ghost-btn">Results</Link>
+
+                      {isViewing && (
+                        <div className="stack" style={{ marginTop: '12px', paddingTop: '12px', borderTop: '1px solid var(--border)' }}>
+                          <dl className="detail-grid">
+                            <dt>ID</dt><dd>{s.id}</dd>
+                            <dt>Status</dt><dd>{s.status || 'draft'}</dd>
+                            <dt>Mode</dt><dd>{config.mode === 'custom_code' ? 'Custom Python code' : 'Visual builder (rules)'}</dd>
+                            <dt>Created</dt><dd>{s.created_at ? new Date(s.created_at).toLocaleString() : '—'}</dd>
+                            <dt>Updated</dt><dd>{s.updated_at ? new Date(s.updated_at).toLocaleString() : '—'}</dd>
+                          </dl>
+
+                          {config.mode === 'custom_code' ? (
+                            <div>
+                              <h4 style={{ margin: '4px 0' }}>Code</h4>
+                              <pre className="code-editor" style={{ whiteSpace: 'pre-wrap' }}>{s.code || '(no code saved)'}</pre>
+                            </div>
+                          ) : (
+                            <>
+                              <div>
+                                <h4 style={{ margin: '4px 0' }}>Parameters</h4>
+                                {config.parameters && Object.keys(config.parameters).length ? (
+                                  <dl className="detail-grid">
+                                    {Object.entries(config.parameters).map(([key, value]) => (
+                                      <React.Fragment key={key}>
+                                        <dt>{key}</dt><dd>{String(value)}</dd>
+                                      </React.Fragment>
+                                    ))}
+                                  </dl>
+                                ) : (
+                                  <p className="muted">No indicator parameters.</p>
+                                )}
+                              </div>
+                              <div>
+                                <h4 style={{ margin: '4px 0' }}>Rules</h4>
+                                <p className="muted">Entry: {config.rules?.entry || '—'}</p>
+                                <p className="muted">Exit: {config.rules?.exit || '—'}</p>
+                              </div>
+                            </>
+                          )}
+                        </div>
+                      )}
+
+                      {isEditing && (
+                        <div className="stack" style={{ marginTop: '12px', paddingTop: '12px', borderTop: '1px solid var(--border)' }}>
+                          <label className="field">
+                            <span>Name</span>
+                            <input
+                              value={editForm.name}
+                              onChange={(e) => setEditForm({ ...editForm, name: e.target.value })}
+                            />
+                          </label>
+                          <label className="field">
+                            <span>Status</span>
+                            <select
+                              value={editForm.status}
+                              onChange={(e) => setEditForm({ ...editForm, status: e.target.value })}
+                            >
+                              <option value="draft">draft</option>
+                              <option value="active">active</option>
+                              <option value="inactive">inactive</option>
+                            </select>
+                          </label>
+                          {config.mode === 'custom_code' ? (
+                            <label className="field">
+                              <span>Code</span>
+                              <CodeEditor
+                                value={editForm.code}
+                                onChange={(value) => setEditForm({ ...editForm, code: value })}
+                              />
+                            </label>
+                          ) : (
+                            <p className="muted" style={{ fontSize: '0.85em' }}>
+                              Indicators and entry/exit rules for visual-builder strategies can't be edited in place —
+                              only the name and status here. Create a new strategy to change the rules.
+                            </p>
+                          )}
+                          <div className="row-actions">
+                            <button
+                              type="button"
+                              className="primary-btn"
+                              onClick={() => handleSaveEditStrategy(s)}
+                              disabled={editSaving || !editForm.name.trim()}
+                            >
+                              {editSaving ? 'Saving...' : 'Save'}
+                            </button>
+                            <button type="button" className="ghost-btn" onClick={cancelEditStrategy}>
+                              Cancel
+                            </button>
+                          </div>
+                        </div>
+                      )}
                     </div>
                   );
                 })}

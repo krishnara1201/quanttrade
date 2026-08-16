@@ -1,5 +1,5 @@
 from typing import Optional
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -31,3 +31,18 @@ async def create_project(project_data: ProjectCreate, db: AsyncSession = Depends
     await db.commit()
     await db.refresh(db_project)
     return db_project
+
+@router.delete("/{project_id}")
+async def delete_project(project_id: int, db: AsyncSession = Depends(get_db),
+                         user: User = Depends(get_current_user)):
+    result = await db.execute(select(Project).where(Project.id == project_id))
+    project = result.scalars().first()
+    if project is None:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    if project.owner_id != user.id:
+        raise HTTPException(status_code=403, detail="Unauthorized")
+
+    await db.delete(project)
+    await db.commit()
+    return {"detail": "Project deleted"}

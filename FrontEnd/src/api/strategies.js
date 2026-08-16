@@ -15,6 +15,11 @@ export async function updateStrategy(id, payload) {
   return data;
 }
 
+export async function deleteStrategy(id) {
+  const { data } = await client.delete(`/strategies/${id}`);
+  return data;
+}
+
 export async function validateCode(code) {
   const { data } = await client.post('/strategies/validate-code', { code });
   return data;

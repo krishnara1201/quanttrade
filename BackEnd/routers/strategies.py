@@ -104,6 +104,24 @@ async def update_strategy(strategy_id: int, strategy_data: dict, db: AsyncSessio
         return strategy
 
 
+@router.delete("/{strategy_id}")
+async def delete_strategy(strategy_id: int, db: AsyncSession = Depends(get_db),
+                            user: User = Depends(get_current_user)):
+        result = await db.execute(
+            select(Strategy).options(selectinload(Strategy.project)).where(Strategy.id == strategy_id)
+        )
+        strategy = result.scalars().first()
+        if strategy is None:
+            raise HTTPException(status_code=404, detail="Strategy not found")
+
+        if strategy.project.owner_id != user.id:
+            raise HTTPException(status_code=403, detail="Unauthorized")
+
+        await db.delete(strategy)
+        await db.commit()
+        return {"detail": "Strategy deleted"}
+
+
 class CodeValidationRequest(BaseModel):
     code: str
 
