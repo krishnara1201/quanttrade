@@ -592,12 +592,12 @@ export default function StrategiesPage() {
                   />
                 </label>
                 <label className="field">
-                  <span>
+                  <span>Position type</span>
+                  <span className="checkbox-row">
                     <input
                       type="checkbox"
                       checked={backtestForm.allowShort}
                       onChange={(e) => setBacktestForm({ ...backtestForm, allowShort: e.target.checked })}
-                      style={{ marginRight: '6px' }}
                     />
                     Allow shorting
                   </span>
