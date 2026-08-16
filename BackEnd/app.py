@@ -1,7 +1,10 @@
+from pathlib import Path
+
 from sqlalchemy import select
-from fastapi import FastAPI, Depends
-from fastapi.responses import JSONResponse
+from fastapi import FastAPI, Depends, HTTPException
+from fastapi.responses import JSONResponse, FileResponse, RedirectResponse
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 from dotenv import load_dotenv
 from database.models import Project, User
 from database.connection import engine, AsyncSessionLocal
@@ -15,6 +18,12 @@ load_dotenv()
 validate_secret_key()
 
 app = FastAPI()
+
+# Only present in the merged Render deploy image (see deploy/Dockerfile),
+# which bakes the built frontend in here so FastAPI can serve it same-origin
+# -- absent in local dev/CI, where every route below that depends on it is
+# skipped entirely rather than erroring on a missing directory.
+STATIC_DIR = Path(__file__).resolve().parent / "static"
 
 # CORS configuration
 cors_origins = os.getenv("CORS_ORIGINS", "http://localhost:5173").split(",")
@@ -36,6 +45,8 @@ async def on_shutdown():
 
 @app.get("/")
 async def read_root():
+    if STATIC_DIR.is_dir():
+        return FileResponse(STATIC_DIR / "index.html")
     return {"message": "Hello World"}
 
 
@@ -45,6 +56,28 @@ app.include_router(auth.router)
 app.include_router(strategies.router)
 app.include_router(data.router)
 app.include_router(backtest.router)
+
+if STATIC_DIR.is_dir():
+    app.mount("/assets", StaticFiles(directory=STATIC_DIR / "assets"), name="frontend-assets")
+
+    # SPA fallback for React Router client-side routes (e.g. /projects,
+    # /strategies/5/backtest) -- registered last so every API router above
+    # still matches first (including strategies.router's own /strategies/{id},
+    # a 2-segment path that can't match the frontend's 3-segment
+    # /strategies/:id/backtest route -- that one correctly falls through to
+    # here). Bad /api/* paths still 404 as JSON instead of silently serving
+    # index.html for a typo'd endpoint.
+    @app.get("/{full_path:path}")
+    async def serve_frontend(full_path: str):
+        if full_path == "api" or full_path.startswith("api/"):
+            raise HTTPException(status_code=404)
+        if full_path == "strategies":
+            # Our catch-all structurally matches this bare path too, which
+            # would otherwise shadow FastAPI's own redirect_slashes handling
+            # for strategies.router's /strategies/ route (see CLAUDE.md's
+            # documented router-prefix quirk) -- reproduce it explicitly.
+            return RedirectResponse(url="/strategies/", status_code=307)
+        return FileResponse(STATIC_DIR / "index.html")
 
 @app.middleware("http")
 async def db_session_middleware(request, call_next):

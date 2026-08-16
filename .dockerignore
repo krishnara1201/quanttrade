@@ -1,0 +1,21 @@
+# Used by deploy/Dockerfile, whose build context is the repo root (unlike
+# BackEnd/Dockerfile and FrontEnd's own tooling, which never see this file).
+.git/
+.venv/
+__pycache__/
+*.pyc
+*.db
+*.sqlite
+.pytest_cache/
+
+.env
+*.env
+.env.local
+.env.*.local
+
+node_modules/
+dist/
+build/
+
+.vscode/
+.idea/
