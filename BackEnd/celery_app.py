@@ -5,12 +5,15 @@ DataImportJob rows in Postgres (see docs/superpowers/specs/
 2026-08-14-celery-redis-async-tasks-design.md), not in a Celery result
 backend, so there's nothing to configure there."""
 import os
+import ssl
 
 from celery import Celery
 
+BROKER_URL = os.getenv("CELERY_BROKER_URL", "redis://localhost:6379/0")
+
 celery_app = Celery(
     "quanttrade",
-    broker=os.getenv("CELERY_BROKER_URL", "redis://localhost:6379/0"),
+    broker=BROKER_URL,
     backend=None,
 )
 celery_app.conf.update(
@@ -25,3 +28,10 @@ celery_app.conf.update(
     # broker — see tests/conftest.py (added in Task 6).
     task_always_eager=os.getenv("CELERY_TASK_ALWAYS_EAGER", "false").lower() == "true",
 )
+
+if BROKER_URL.startswith("rediss://"):
+    # redis-py/kombu otherwise silently default a rediss:// broker to no
+    # certificate verification ("insecure SSL behaviour") -- the connection
+    # is encrypted but not authenticated, no protection against a MITM
+    # presenting a fake cert, unless this is set explicitly.
+    celery_app.conf.broker_use_ssl = {"ssl_cert_reqs": ssl.CERT_REQUIRED}
