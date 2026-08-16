@@ -77,6 +77,15 @@ if STATIC_DIR.is_dir():
             # for strategies.router's /strategies/ route (see CLAUDE.md's
             # documented router-prefix quirk) -- reproduce it explicitly.
             return RedirectResponse(url="/strategies/", status_code=307)
+        # Vite copies FrontEnd/public/* (favicon*, apple-touch-icon.png,
+        # icon-512.png, ...) straight into dist/'s root, not under
+        # dist/assets/ -- the /assets mount above doesn't cover them, so
+        # without this check they'd fall through to the SPA shell below and
+        # e.g. the favicon would silently 200 with index.html's HTML instead
+        # of image bytes.
+        candidate = STATIC_DIR / full_path
+        if candidate.is_file() and candidate.resolve().parent == STATIC_DIR:
+            return FileResponse(candidate)
         return FileResponse(STATIC_DIR / "index.html")
 
 @app.middleware("http")
