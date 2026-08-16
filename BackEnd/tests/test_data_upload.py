@@ -90,6 +90,17 @@ async def test_upload_market_data_persists_optional_adj_close(session_factory, u
     assert float(created.adj_close) == 0.99
 
 
+@pytest.mark.asyncio
+async def test_upload_market_data_records_importer(session_factory, user):
+    payload = data_router.MarketDataCreate(
+        ticker="AAPL", date=datetime(2024, 1, 2),
+        open=1, high=1, low=1, close=1, volume=1,
+    )
+    async with session_factory() as db:
+        created = await data_router.upload_market_data(payload, db=db, current_user=user)
+    assert created.imported_by == user.id
+
+
 def test_market_data_create_rejects_legacy_symbol_timestamp_fields():
     """The pre-fix schema used symbol/timestamp; those must no longer validate."""
     with pytest.raises(ValidationError):

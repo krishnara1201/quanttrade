@@ -10,6 +10,7 @@ export default function DataPage() {
   const [tickerDetails, setTickerDetails] = useState({});
   const [tickersLoading, setTickersLoading] = useState(true);
   const [deletingTicker, setDeletingTicker] = useState(null);
+  const [deleteNotices, setDeleteNotices] = useState({});
 
   const [chartTicker, setChartTicker] = useState('');
   const [chartRange, setChartRange] = useState({ startDate: '', endDate: '' });
@@ -86,19 +87,39 @@ export default function DataPage() {
   }, [chartTicker, chartRange.startDate, chartRange.endDate]);
 
   const handleDeleteTicker = async (ticker) => {
-    if (!window.confirm(`Delete all stored data for ${ticker}? This cannot be undone.`)) {
+    const details = tickerDetails[ticker];
+    const deletable = details?.deletable_count;
+    const total = details?.count;
+    const confirmMessage = deletable != null && deletable < total
+      ? `Only ${deletable} of ${total} stored bar(s) for ${ticker} were imported by you — the rest belong to another user and will be left in place. Delete your ${deletable} bar(s)? This cannot be undone.`
+      : `Delete all stored data for ${ticker}? This cannot be undone.`;
+    if (!window.confirm(confirmMessage)) {
       return;
     }
     setDeletingTicker(ticker);
+    setDeleteNotices((prev) => ({ ...prev, [ticker]: null }));
     try {
-      await dataApi.deleteTickerData(ticker);
-      if (chartTicker === ticker) {
-        setChartTicker('');
-        setChartData([]);
+      const result = await dataApi.deleteTickerData(ticker);
+      if (result.deleted === total) {
+        if (chartTicker === ticker) {
+          setChartTicker('');
+          setChartData([]);
+        }
+      } else {
+        const remaining = total - result.deleted;
+        setDeleteNotices((prev) => ({
+          ...prev,
+          [ticker]: result.deleted === 0
+            ? `None of this ticker's data was imported by you — nothing was deleted.`
+            : `Deleted ${result.deleted} of ${total} bar(s). The remaining ${remaining} were imported by another user and can't be removed.`,
+        }));
       }
       await loadTickers();
     } catch (err) {
-      window.alert(err?.response?.data?.detail || err.message || 'Delete failed');
+      setDeleteNotices((prev) => ({
+        ...prev,
+        [ticker]: err?.response?.data?.detail || err.message || 'Delete failed',
+      }));
     } finally {
       setDeletingTicker(null);
     }
@@ -300,23 +321,46 @@ export default function DataPage() {
         <div className="list">
           {tickers.map((t) => {
             const details = tickerDetails[t];
+            const deletable = details?.deletable_count;
+            const total = details?.count;
+            const noneDeletable = details && deletable === 0;
+            const someDeletable = details && deletable > 0 && deletable < total;
+            const notice = deleteNotices[t];
             return (
               <div key={t} className="list-row">
                 <div>
                   <div className="title-row">
                     <span className="title">{t}</span>
                     {details && <span className="chip">{details.count} daily bars</span>}
+                    {noneDeletable && (
+                      <span
+                        className="chip chip-danger"
+                        title="This ticker's data was imported by another user — you can't delete it."
+                      >
+                        Not yours
+                      </span>
+                    )}
+                    {someDeletable && (
+                      <span
+                        className="chip chip-warn"
+                        title={`${deletable} of ${total} bar(s) were imported by you; the rest belong to another user.`}
+                      >
+                        Partly yours
+                      </span>
+                    )}
                   </div>
                   {details && (
                     <p className="muted">
                       {details.start_date?.slice(0, 10)} to {details.end_date?.slice(0, 10)}
                     </p>
                   )}
+                  {notice && <p className="muted">{notice}</p>}
                 </div>
                 <button
                   className="ghost-btn"
                   onClick={() => handleDeleteTicker(t)}
-                  disabled={deletingTicker === t}
+                  disabled={deletingTicker === t || noneDeletable}
+                  title={noneDeletable ? "This ticker's data was imported by another user — you can't delete it." : undefined}
                 >
                   {deletingTicker === t ? 'Deleting...' : 'Delete'}
                 </button>

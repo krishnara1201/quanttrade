@@ -70,7 +70,7 @@ def _split_bar_groups(content: bytes, ticker: Optional[str]) -> list[tuple[str, 
     return [(ticker, df)]
 
 
-async def _bulk_upsert_market_data(ticker: str, df: pd.DataFrame, db: AsyncSession) -> dict:
+async def _bulk_upsert_market_data(ticker: str, df: pd.DataFrame, db: AsyncSession, imported_by: Optional[int] = None) -> dict:
     """Insert bars from `df` for `ticker`, skipping any (ticker, date) pair
     already stored."""
     df = df.rename(columns={c: c.strip().lower().replace(" ", "_") for c in df.columns})
@@ -108,6 +108,7 @@ async def _bulk_upsert_market_data(ticker: str, df: pd.DataFrame, db: AsyncSessi
             close=str(rec["close"]),
             volume=str(rec["volume"]),
             adj_close=str(rec["adj_close"]) if has_adj_close and pd.notna(rec.get("adj_close")) else None,
+            imported_by=imported_by,
         ))
         seen_dates.add(row_date)
         inserted += 1
@@ -141,7 +142,7 @@ async def execute_csv_import(job_id: int, ticker: Optional[str], content: bytes,
         groups = _split_bar_groups(content, ticker)
         results = []
         for group_ticker, group_df in groups:
-            results.append(await _bulk_upsert_market_data(group_ticker.upper(), group_df, db))
+            results.append(await _bulk_upsert_market_data(group_ticker.upper(), group_df, db, imported_by=job.user_id))
     except Exception as e:
         await db.rollback()
         job.status = "failed"
@@ -230,7 +231,7 @@ async def execute_alpha_vantage_import(
         df = df[df["date"] <= pd.to_datetime(end_date)]
 
     try:
-        job_result = await _bulk_upsert_market_data(ticker.upper(), df, db)
+        job_result = await _bulk_upsert_market_data(ticker.upper(), df, db, imported_by=job.user_id)
     except ValueError as e:
         job.status = "failed"
         job.error_message = str(e)

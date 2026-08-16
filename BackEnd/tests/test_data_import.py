@@ -111,6 +111,19 @@ async def test_bulk_upsert_skips_bars_already_stored(session_factory):
 
 
 @pytest.mark.asyncio
+async def test_bulk_upsert_records_importer(session_factory):
+    df = pd.DataFrame([
+        {"date": "2024-01-02", "open": 1, "high": 2, "low": 0.5, "close": 1.5, "volume": 100},
+    ])
+    async with session_factory() as db:
+        await data_import_service._bulk_upsert_market_data("AAPL", df, db, imported_by=42)
+
+    async with session_factory() as db:
+        row = (await db.execute(select(MarketData).where(MarketData.ticker == "AAPL"))).scalars().first()
+    assert row.imported_by == 42
+
+
+@pytest.mark.asyncio
 async def test_bulk_upsert_rejects_missing_columns(session_factory):
     df = pd.DataFrame([{"date": "2024-01-02", "open": 1, "close": 1.5}])
     async with session_factory() as db:
@@ -153,6 +166,24 @@ async def test_upload_market_data_csv_inserts_bars(session_factory, user, monkey
 
     assert job["status"] == "success"
     assert job["result"] == {"ticker": "AAPL", "inserted": 2, "skipped": 0}
+
+
+@pytest.mark.asyncio
+async def test_upload_market_data_csv_records_importer(session_factory, user, monkeypatch):
+    _run_task_delay_in_new_thread(monkeypatch, data_router.upload_csv_task)
+    csv_bytes = b"Date,Open,High,Low,Close,Volume\n2024-01-02,185.5,186.0,184.75,185.9,1000000\n"
+    upload = UploadFile(file=io.BytesIO(csv_bytes), filename="aapl.csv")
+
+    async with session_factory() as db:
+        response = await data_router.upload_market_data_csv(
+            ticker="aapl", file=upload, db=db, current_user=user,
+        )
+        job = await data_router.get_import_job(response["job_id"], db=db, current_user=user)
+    assert job["status"] == "success"
+
+    async with session_factory() as db:
+        row = (await db.execute(select(MarketData).where(MarketData.ticker == "AAPL"))).scalars().first()
+    assert row.imported_by == user.id
 
 
 @pytest.mark.asyncio
@@ -345,6 +376,32 @@ async def test_import_market_data_from_web_inserts_bars(session_factory, user, m
     assert job["result"] == {"ticker": "AAPL", "inserted": 2, "skipped": 0}
     assert captured["params"]["symbol"] == "aapl"
     assert captured["params"]["function"] == "TIME_SERIES_DAILY"
+
+
+@pytest.mark.asyncio
+async def test_import_market_data_from_web_records_importer(session_factory, user, monkeypatch):
+    _run_task_delay_in_new_thread(monkeypatch, data_router.import_alpha_vantage_task)
+    payload = {
+        "Time Series (Daily)": {
+            "2024-01-02": {"1. open": "185.5", "2. high": "186.0", "3. low": "184.75", "4. close": "185.9", "5. volume": "1000000"},
+        }
+    }
+
+    async def fake_get(self, url, params=None, **kwargs):
+        return _FakeResponse(payload)
+
+    monkeypatch.setattr(httpx.AsyncClient, "get", fake_get)
+
+    async with session_factory() as db:
+        response = await data_router.import_market_data_from_web(
+            "aapl", start_date=None, end_date=None, db=db, current_user=user,
+        )
+        job = await data_router.get_import_job(response["job_id"], db=db, current_user=user)
+    assert job["status"] == "success"
+
+    async with session_factory() as db:
+        row = (await db.execute(select(MarketData).where(MarketData.ticker == "AAPL"))).scalars().first()
+    assert row.imported_by == user.id
 
 
 @pytest.mark.asyncio

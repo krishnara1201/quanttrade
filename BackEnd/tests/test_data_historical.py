@@ -81,6 +81,36 @@ async def test_get_ticker_range_reports_min_max_and_count(session_factory, user)
 
 
 @pytest.mark.asyncio
+async def test_get_ticker_range_reports_deletable_count(session_factory, user):
+    """AAPL has 5 legacy (imported_by NULL) bars from the `seeded` fixture —
+    all deletable by any user, including the current one."""
+    async with session_factory() as db:
+        result = await data_router.get_ticker_range("AAPL", db=db, current_user=user)
+    assert result["count"] == 5
+    assert result["deletable_count"] == 5
+
+
+@pytest.mark.asyncio
+async def test_get_ticker_range_deletable_count_excludes_other_users_rows(session_factory, user):
+    from sqlalchemy import select
+    async with session_factory() as db:
+        other = User(name="Bea", email="bea@example.com", password_hash="x")
+        db.add(other)
+        await db.flush()
+        db.add(MarketData(
+            ticker="AAPL", date=datetime(2024, 1, 6),
+            open="16", high="16", low="16", close="16", volume="1000",
+            imported_by=other.id,
+        ))
+        await db.commit()
+
+    async with session_factory() as db:
+        result = await data_router.get_ticker_range("AAPL", db=db, current_user=user)
+    assert result["count"] == 6
+    assert result["deletable_count"] == 5
+
+
+@pytest.mark.asyncio
 async def test_get_ticker_range_404s_for_unknown_ticker(session_factory, user):
     async with session_factory() as db:
         with pytest.raises(HTTPException) as exc_info:

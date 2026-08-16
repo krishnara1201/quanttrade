@@ -56,6 +56,74 @@ async def user(session_factory, seeded):
         return result.scalars().first()
 
 
+@pytest_asyncio.fixture
+async def other_user(session_factory):
+    async with session_factory() as db:
+        u = User(name="Bea", email="bea@example.com", password_hash="x")
+        db.add(u)
+        await db.commit()
+        await db.refresh(u)
+        return u
+
+
+@pytest.mark.asyncio
+async def test_delete_market_data_removes_own_row(session_factory, user):
+    async with session_factory() as db:
+        row = MarketData(
+            ticker="TSLA", date=datetime(2024, 3, 1),
+            open="1", high="1", low="1", close="1", volume="1", imported_by=user.id,
+        )
+        db.add(row)
+        await db.commit()
+        await db.refresh(row)
+        row_id = row.id
+
+    async with session_factory() as db:
+        result = await data_router.delete_market_data(row_id, db=db, current_user=user)
+    assert result == {"detail": "Market data deleted"}
+
+
+@pytest.mark.asyncio
+async def test_delete_market_data_403s_for_another_users_row(session_factory, user, other_user):
+    async with session_factory() as db:
+        row = MarketData(
+            ticker="TSLA", date=datetime(2024, 3, 1),
+            open="1", high="1", low="1", close="1", volume="1", imported_by=other_user.id,
+        )
+        db.add(row)
+        await db.commit()
+        await db.refresh(row)
+        row_id = row.id
+
+    async with session_factory() as db:
+        with pytest.raises(HTTPException) as exc_info:
+            await data_router.delete_market_data(row_id, db=db, current_user=user)
+    assert exc_info.value.status_code == 403
+
+    async with session_factory() as db:
+        still_there = (await db.execute(select(MarketData).where(MarketData.id == row_id))).scalars().first()
+    assert still_there is not None
+
+
+@pytest.mark.asyncio
+async def test_delete_market_data_allows_deleting_legacy_row_with_no_importer(session_factory, user):
+    """Rows imported before imported_by existed have imported_by IS NULL and
+    stay deletable by any authenticated user, matching pre-existing behavior."""
+    async with session_factory() as db:
+        row = MarketData(
+            ticker="TSLA", date=datetime(2024, 3, 1),
+            open="1", high="1", low="1", close="1", volume="1",
+        )
+        db.add(row)
+        await db.commit()
+        await db.refresh(row)
+        row_id = row.id
+
+    async with session_factory() as db:
+        result = await data_router.delete_market_data(row_id, db=db, current_user=user)
+    assert result == {"detail": "Market data deleted"}
+
+
 @pytest.mark.asyncio
 async def test_delete_ticker_data_removes_only_that_tickers_rows(session_factory, user):
     async with session_factory() as db:
@@ -67,6 +135,33 @@ async def test_delete_ticker_data_removes_only_that_tickers_rows(session_factory
         remaining = await db.execute(select(MarketData.ticker))
         tickers = remaining.scalars().all()
     assert tickers == ["MSFT"]
+
+
+@pytest.mark.asyncio
+async def test_delete_ticker_data_only_removes_own_and_legacy_rows(session_factory, user, other_user):
+    """AAPL has 3 legacy rows (imported_by NULL, from the `seeded` fixture)
+    plus one row imported by other_user and one imported by `user` itself —
+    the bulk delete should remove the legacy + own rows but leave
+    other_user's row untouched."""
+    async with session_factory() as db:
+        db.add(MarketData(
+            ticker="AAPL", date=datetime(2024, 1, 10),
+            open="1", high="1", low="1", close="1", volume="1", imported_by=other_user.id,
+        ))
+        db.add(MarketData(
+            ticker="AAPL", date=datetime(2024, 1, 11),
+            open="1", high="1", low="1", close="1", volume="1", imported_by=user.id,
+        ))
+        await db.commit()
+
+    async with session_factory() as db:
+        result = await data_router.delete_ticker_data("AAPL", db=db, current_user=user)
+    assert result == {"ticker": "AAPL", "deleted": 4}  # 3 legacy + 1 own
+
+    async with session_factory() as db:
+        remaining = (await db.execute(select(MarketData).where(MarketData.ticker == "AAPL"))).scalars().all()
+    assert len(remaining) == 1
+    assert remaining[0].imported_by == other_user.id
 
 
 @pytest.mark.asyncio

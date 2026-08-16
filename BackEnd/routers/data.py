@@ -21,6 +21,12 @@ router = APIRouter(prefix="/api/data", tags=["data"])
 MAX_UPLOAD_BYTES = 50 * 1024 * 1024
 
 
+def _deletable_by(user: User):
+    """MarketData rows `user` is allowed to delete: their own imports, plus
+    legacy rows with no recorded importer."""
+    return (MarketData.imported_by == user.id) | (MarketData.imported_by.is_(None))
+
+
 class MarketDataCreate(BaseModel):
     ticker: str
     date: datetime
@@ -45,6 +51,7 @@ async def upload_market_data(data: MarketDataCreate, db: AsyncSession = Depends(
         close=str(data.close),
         volume=str(data.volume),
         adj_close=str(data.adj_close) if data.adj_close is not None else None,
+        imported_by=current_user.id,
     )
     db.add(db_data)
     await db.commit()
@@ -177,7 +184,18 @@ async def get_ticker_range(ticker: str, db: AsyncSession = Depends(get_db), curr
     start_date, end_date, count = result.one()
     if not count:
         raise HTTPException(status_code=404, detail=f"No market data found for ticker '{ticker}'")
-    return {"ticker": ticker, "start_date": start_date, "end_date": end_date, "count": count}
+
+    deletable_result = await db.execute(
+        select(func.count(MarketData.id)).where(MarketData.ticker == ticker, _deletable_by(current_user))
+    )
+    deletable_count = deletable_result.scalar_one()
+    return {
+        "ticker": ticker,
+        "start_date": start_date,
+        "end_date": end_date,
+        "count": count,
+        "deletable_count": deletable_count,
+    }
 
 @router.get("/{ticker}/historical")
 async def get_historical_data(
@@ -208,6 +226,8 @@ async def delete_market_data(data_id: int, db: AsyncSession = Depends(get_db), c
     data = result.scalars().first()
     if data is None:
         return {"error": "Market data not found"}
+    if data.imported_by is not None and data.imported_by != current_user.id:
+        raise HTTPException(status_code=403, detail="Unauthorized")
     await db.delete(data)
     await db.commit()
     return {"detail": "Market data deleted"}
@@ -217,13 +237,14 @@ async def delete_ticker_data(ticker: str, db: AsyncSession = Depends(get_db), cu
     """Bulk-delete every MarketData row for a ticker in one action — the
     single-row DELETE /{data_id} above is impractical once a ticker has
     thousands of bars."""
-    count_result = await db.execute(
+    exists_result = await db.execute(
         select(func.count(MarketData.id)).where(MarketData.ticker == ticker)
     )
-    count = count_result.scalar_one()
-    if not count:
+    if not exists_result.scalar_one():
         raise HTTPException(status_code=404, detail=f"No market data found for ticker '{ticker}'")
 
-    await db.execute(delete(MarketData).where(MarketData.ticker == ticker))
+    delete_result = await db.execute(
+        delete(MarketData).where(MarketData.ticker == ticker, _deletable_by(current_user))
+    )
     await db.commit()
-    return {"ticker": ticker, "deleted": count}
+    return {"ticker": ticker, "deleted": delete_result.rowcount}

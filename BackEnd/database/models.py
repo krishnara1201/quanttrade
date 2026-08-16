@@ -71,6 +71,7 @@ class MarketData(Base):
     close = Column(String, nullable=False)
     volume = Column(String, nullable=False)
     adj_close = Column(String, nullable=True)
+    imported_by = Column(Integer, ForeignKey("users.id"), nullable=True)
 
     __table_args__ = (
         UniqueConstraint('ticker', 'date', name='uix_ticker_date'),
