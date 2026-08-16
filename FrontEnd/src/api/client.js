@@ -1,6 +1,9 @@
 import axios from 'axios';
 
-export const API_BASE = import.meta.env.VITE_API_BASE || 'http://localhost:8000';
+// Nullish coalescing, not ||: an intentionally empty VITE_API_BASE (same-origin
+// deploys behind a reverse proxy/rewrite rules) is a valid falsy-but-defined
+// value that must NOT fall back to the localhost default.
+export const API_BASE = import.meta.env.VITE_API_BASE ?? 'http://localhost:8000';
 
 const client = axios.create({
   baseURL: API_BASE,
