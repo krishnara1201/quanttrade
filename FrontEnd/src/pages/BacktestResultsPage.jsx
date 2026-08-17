@@ -183,45 +183,23 @@ export default function BacktestResultsPage() {
 
               {selectedResult._type === 'portfolio' && (
                 <>
-                  <h3 style={{ marginTop: '20px' }}>Per-ticker breakdown</h3>
+                  <h3 style={{ marginTop: '20px' }}>Per-ticker summary</h3>
                   <div className="list">
                     {(selectedResult.allocations || []).map((alloc) => {
                       const tickerResult = selectedResult.per_ticker?.[alloc.ticker];
                       return (
-                        <div key={alloc.ticker}>
-                          <div
-                            className="list-row"
-                            onClick={() => setExpandedTicker(expandedTicker === alloc.ticker ? null : alloc.ticker)}
-                            style={{ cursor: 'pointer' }}
-                          >
-                            <div className="expand-row">
-                              {expandedTicker === alloc.ticker ? (
-                                <ChevronDown size={15} />
-                              ) : (
-                                <ChevronRight size={15} />
-                              )}
-                              <div>
-                                <div className="title-row">
-                                  <span className="title">{alloc.ticker}</span>
-                                  <span className="chip">{(alloc.weight * 100).toFixed(1)}% weight</span>
-                                </div>
-                                <p className="muted">
-                                  Return {tickerResult?.metrics?.return_pct?.toFixed(2) || 0}%
-                                  {' · '}
-                                  {tickerResult?.metrics?.num_trades || 0} trades
-                                  {' · '}
-                                  Win rate {tickerResult?.metrics?.win_rate?.toFixed(1) || 0}%
-                                </p>
-                              </div>
-                            </div>
+                        <div key={alloc.ticker} className="list-row">
+                          <div className="title-row">
+                            <span className="title">{alloc.ticker}</span>
+                            <span className="chip">{(alloc.weight * 100).toFixed(1)}% weight</span>
                           </div>
-                          {expandedTicker === alloc.ticker && tickerResult && (
-                            <BacktestChart
-                              data={tickerResult.signals}
-                              trades={tickerResult.trades}
-                              equityCurve={tickerResult.equity_curve}
-                            />
-                          )}
+                          <p className="muted">
+                            Return {tickerResult?.metrics?.return_pct?.toFixed(2) || 0}%
+                            {' · '}
+                            {tickerResult?.metrics?.num_trades || 0} trades
+                            {' · '}
+                            Win rate {tickerResult?.metrics?.win_rate?.toFixed(1) || 0}%
+                          </p>
                         </div>
                       );
                     })}
@@ -300,6 +278,53 @@ export default function BacktestResultsPage() {
             equityCurve={selectedResult.equity_curve}
             benchmarkEquityCurve={selectedResult.benchmark_equity_curve}
           />
+        </div>
+      )}
+      {selectedResult && selectedResult._type === 'portfolio' && (
+        <div className="card">
+          <h3>Per-ticker breakdown</h3>
+          <div className="list">
+            {(selectedResult.allocations || []).map((alloc) => {
+              const tickerResult = selectedResult.per_ticker?.[alloc.ticker];
+              return (
+                <div key={alloc.ticker}>
+                  <div
+                    className="list-row"
+                    onClick={() => setExpandedTicker(expandedTicker === alloc.ticker ? null : alloc.ticker)}
+                    style={{ cursor: 'pointer' }}
+                  >
+                    <div className="expand-row">
+                      {expandedTicker === alloc.ticker ? (
+                        <ChevronDown size={15} />
+                      ) : (
+                        <ChevronRight size={15} />
+                      )}
+                      <div>
+                        <div className="title-row">
+                          <span className="title">{alloc.ticker}</span>
+                          <span className="chip">{(alloc.weight * 100).toFixed(1)}% weight</span>
+                        </div>
+                        <p className="muted">
+                          Return {tickerResult?.metrics?.return_pct?.toFixed(2) || 0}%
+                          {' · '}
+                          {tickerResult?.metrics?.num_trades || 0} trades
+                          {' · '}
+                          Win rate {tickerResult?.metrics?.win_rate?.toFixed(1) || 0}%
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+                  {expandedTicker === alloc.ticker && tickerResult && (
+                    <BacktestChart
+                      data={tickerResult.signals}
+                      trades={tickerResult.trades}
+                      equityCurve={tickerResult.equity_curve}
+                    />
+                  )}
+                </div>
+              );
+            })}
+          </div>
         </div>
       )}
       {selectedResult && selectedResult._type === 'portfolio' && (
