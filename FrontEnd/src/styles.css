@@ -50,6 +50,7 @@ a {
 
 code {
   font-family: var(--font-mono);
+  overflow-wrap: break-word;
 }
 
 .app-shell {
