@@ -1,6 +1,8 @@
 import React from 'react';
 import { Navigate, Route, Routes } from 'react-router-dom';
 import TopNav from './components/TopNav.jsx';
+import Footer from './components/Footer.jsx';
+import Sidebar from './components/Sidebar.jsx';
 import ProtectedRoute from './components/ProtectedRoute.jsx';
 import MainPage from './pages/MainPage.jsx';
 import AuthPage from './pages/AuthPage.jsx';
@@ -9,18 +11,39 @@ import StrategiesPage from './pages/StrategiesPage.jsx';
 import BacktestResultsPage from './pages/BacktestResultsPage.jsx';
 import DataPage from './pages/DataPage.jsx';
 
+// Marketing/auth pages get the simple top bar; authenticated app pages get
+// the persistent sidebar (Dashboard) instead -- different chrome for a
+// landing page vs. a workspace, same as most real dashboard products.
+function Public({ children }) {
+  return (
+    <>
+      <TopNav />
+      <main className="public-main">{children}</main>
+      <Footer />
+    </>
+  );
+}
+
+function Dashboard({ children }) {
+  return (
+    <div className="dashboard-shell">
+      <Sidebar />
+      <div className="dashboard-main">{children}</div>
+    </div>
+  );
+}
+
 export default function App() {
   return (
     <div className="app-shell">
-      <TopNav />
       <Routes>
-        <Route path="/" element={<MainPage />} />
-        <Route path="/auth" element={<AuthPage />} />
+        <Route path="/" element={<Public><MainPage /></Public>} />
+        <Route path="/auth" element={<Public><AuthPage /></Public>} />
         <Route
           path="/projects"
           element={(
             <ProtectedRoute>
-              <ProjectsPage />
+              <Dashboard><ProjectsPage /></Dashboard>
             </ProtectedRoute>
           )}
         />
@@ -28,7 +51,7 @@ export default function App() {
           path="/data"
           element={(
             <ProtectedRoute>
-              <DataPage />
+              <Dashboard><DataPage /></Dashboard>
             </ProtectedRoute>
           )}
         />
@@ -36,7 +59,7 @@ export default function App() {
           path="/projects/:projectId/strategies"
           element={(
             <ProtectedRoute>
-              <StrategiesPage />
+              <Dashboard><StrategiesPage /></Dashboard>
             </ProtectedRoute>
           )}
         />
@@ -44,7 +67,7 @@ export default function App() {
           path="/strategies/:strategyId/backtest"
           element={(
             <ProtectedRoute>
-              <BacktestResultsPage />
+              <Dashboard><BacktestResultsPage /></Dashboard>
             </ProtectedRoute>
           )}
         />

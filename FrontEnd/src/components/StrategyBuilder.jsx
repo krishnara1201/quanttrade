@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { Trash2 } from 'lucide-react';
 import CodeEditor from './CodeEditor.jsx';
 
 const INDICATORS = [
@@ -318,7 +319,14 @@ def generate_signals(df):
                     </>
                   )}
 
-                  <button className="icon-btn" onClick={() => removeIndicator(idx)}>🗑️</button>
+                  <button
+                    type="button"
+                    className="icon-btn"
+                    onClick={() => removeIndicator(idx)}
+                    aria-label="Remove indicator"
+                  >
+                    <Trash2 size={15} />
+                  </button>
                 </div>
               ))}
               {indicators.length === 0 && <p className="muted">No indicators added yet. Click "Add Indicator" to start.</p>}

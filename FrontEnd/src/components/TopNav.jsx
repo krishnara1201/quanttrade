@@ -1,37 +1,21 @@
 import React from 'react';
-import { Link, useLocation } from 'react-router-dom';
+import { Link } from 'react-router-dom';
+import { ChartCandlestick } from 'lucide-react';
 import { useAuth } from '../state/AuthContext.jsx';
 
 export default function TopNav() {
   const { isAuthenticated, logout, profile } = useAuth();
-  const location = useLocation();
-
-  const navLinks = [
-    { to: '/', label: 'Home' },
-    { to: '/projects', label: 'Projects', requireAuth: true },
-    { to: '/data', label: 'Data', requireAuth: true },
-  ];
 
   return (
     <header className="nav-shell">
-      <div className="brand-mark">
-        <div className="dot" />
+      <Link to="/" className="brand-mark">
+        <ChartCandlestick size={20} />
         <span>QuantTrade</span>
-      </div>
-      <nav className="nav-links">
-        {navLinks.map((item) => {
-          if (item.requireAuth && !isAuthenticated) return null;
-          const active = location.pathname === item.to;
-          return (
-            <Link key={item.to} to={item.to} className={active ? 'nav-link active' : 'nav-link'}>
-              {item.label}
-            </Link>
-          );
-        })}
-      </nav>
+      </Link>
       <div className="nav-actions">
         {isAuthenticated ? (
           <>
+            <Link to="/projects" className="ghost-btn">Go to projects</Link>
             <span className="chip">{profile?.email}</span>
             <button className="ghost-btn" onClick={logout}>Sign out</button>
           </>

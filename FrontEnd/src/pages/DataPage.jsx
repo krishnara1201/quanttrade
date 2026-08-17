@@ -311,7 +311,7 @@ export default function DataPage() {
         </div>
       </div>
 
-      <div className="card" style={{ marginTop: '20px' }}>
+      <div className="card">
         <div className="card-head">
           <h3>Data on file</h3>
           <button className="ghost-btn" onClick={loadTickers}>Refresh</button>
@@ -370,7 +370,7 @@ export default function DataPage() {
         </div>
       </div>
 
-      <div className="card" style={{ marginTop: '20px' }}>
+      <div className="card">
         <h3>Visualize</h3>
         {!tickersLoading && !tickers.length && <p className="muted">Import some data first.</p>}
         {!!tickers.length && (

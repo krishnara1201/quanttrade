@@ -488,7 +488,7 @@ export default function StrategiesPage() {
           </div>
 
           {/* Backtest Panel */}
-          <div className="card" style={{ marginTop: '20px' }}>
+          <div className="card">
             <h3>Run Backtest</h3>
             <form className="stack" onSubmit={handleRunBacktest}>
               <label className="field" style={{ marginBottom: '8px' }}>

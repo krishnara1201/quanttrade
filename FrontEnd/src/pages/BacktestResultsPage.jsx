@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { useParams } from 'react-router-dom';
+import { ChevronDown, ChevronRight, RefreshCw } from 'lucide-react';
 import BacktestChart from '../components/BacktestChart.jsx';
 import * as backtestApi from '../api/backtest.js';
 
@@ -193,18 +194,25 @@ export default function BacktestResultsPage() {
                             onClick={() => setExpandedTicker(expandedTicker === alloc.ticker ? null : alloc.ticker)}
                             style={{ cursor: 'pointer' }}
                           >
-                            <div>
-                              <div className="title-row">
-                                <span className="title">{alloc.ticker}</span>
-                                <span className="chip">{(alloc.weight * 100).toFixed(1)}% weight</span>
+                            <div className="expand-row">
+                              {expandedTicker === alloc.ticker ? (
+                                <ChevronDown size={15} />
+                              ) : (
+                                <ChevronRight size={15} />
+                              )}
+                              <div>
+                                <div className="title-row">
+                                  <span className="title">{alloc.ticker}</span>
+                                  <span className="chip">{(alloc.weight * 100).toFixed(1)}% weight</span>
+                                </div>
+                                <p className="muted">
+                                  Return {tickerResult?.metrics?.return_pct?.toFixed(2) || 0}%
+                                  {' · '}
+                                  {tickerResult?.metrics?.num_trades || 0} trades
+                                  {' · '}
+                                  Win rate {tickerResult?.metrics?.win_rate?.toFixed(1) || 0}%
+                                </p>
                               </div>
-                              <p className="muted">
-                                Return {tickerResult?.metrics?.return_pct?.toFixed(2) || 0}%
-                                {' · '}
-                                {tickerResult?.metrics?.num_trades || 0} trades
-                                {' · '}
-                                Win rate {tickerResult?.metrics?.win_rate?.toFixed(1) || 0}%
-                              </p>
                             </div>
                           </div>
                           {expandedTicker === alloc.ticker && tickerResult && (
@@ -284,7 +292,7 @@ export default function BacktestResultsPage() {
 
       {/* Aggregate chart */}
       {selectedResult && selectedResult._type === 'single' && (
-        <div className="card" style={{ marginTop: '20px' }}>
+        <div className="card">
           <h3>Price & Signals</h3>
           <BacktestChart
             data={selectedResult.signals}
@@ -295,7 +303,7 @@ export default function BacktestResultsPage() {
         </div>
       )}
       {selectedResult && selectedResult._type === 'portfolio' && (
-        <div className="card" style={{ marginTop: '20px' }}>
+        <div className="card">
           <h3>Portfolio Equity</h3>
           <BacktestChart
             data={[]}
@@ -307,7 +315,7 @@ export default function BacktestResultsPage() {
         </div>
       )}
       {selectedResult && selectedResult._type === 'walk_forward' && (
-        <div className="card" style={{ marginTop: '20px' }}>
+        <div className="card">
           <h3>Walk-Forward OOS Equity</h3>
           <BacktestChart
             data={[]}
