@@ -14,6 +14,7 @@ export default function DataPage() {
 
   const [chartTicker, setChartTicker] = useState('');
   const [chartRange, setChartRange] = useState({ startDate: '', endDate: '' });
+  const [appliedRange, setAppliedRange] = useState({ startDate: '', endDate: '' });
   const [chartData, setChartData] = useState([]);
   const [chartLoading, setChartLoading] = useState(false);
   const [chartError, setChartError] = useState('');
@@ -66,14 +67,15 @@ export default function DataPage() {
     const startDate = details?.start_date?.slice(0, 10) || '';
     const endDate = details?.end_date?.slice(0, 10) || '';
     setChartRange({ startDate, endDate });
+    setAppliedRange({ startDate, endDate });
   }, [chartTicker, tickerDetails]);
 
   useEffect(() => {
-    if (!chartTicker || !chartRange.startDate || !chartRange.endDate) return;
+    if (!chartTicker || !appliedRange.startDate || !appliedRange.endDate) return;
     let cancelled = false;
     setChartLoading(true);
     setChartError('');
-    dataApi.getHistoricalData(chartTicker, chartRange.startDate, chartRange.endDate)
+    dataApi.getHistoricalData(chartTicker, appliedRange.startDate, appliedRange.endDate)
       .then((rows) => {
         if (!cancelled) setChartData(rows || []);
       })
@@ -84,7 +86,13 @@ export default function DataPage() {
         if (!cancelled) setChartLoading(false);
       });
     return () => { cancelled = true; };
-  }, [chartTicker, chartRange.startDate, chartRange.endDate]);
+  }, [chartTicker, appliedRange.startDate, appliedRange.endDate]);
+
+  const handleUpdateCharts = () => {
+    setAppliedRange({ startDate: chartRange.startDate, endDate: chartRange.endDate });
+  };
+
+  const chartRangeDirty = chartRange.startDate !== appliedRange.startDate || chartRange.endDate !== appliedRange.endDate;
 
   const handleDeleteTicker = async (ticker) => {
     const details = tickerDetails[ticker];
@@ -402,6 +410,14 @@ export default function DataPage() {
                   onChange={(e) => setChartRange({ ...chartRange, endDate: e.target.value })}
                 />
               </label>
+              <button
+                className="primary-btn"
+                type="button"
+                onClick={handleUpdateCharts}
+                disabled={!chartRangeDirty || !chartRange.startDate || !chartRange.endDate}
+              >
+                Update Charts
+              </button>
             </div>
             {chartLoading && <p className="muted" style={{ marginTop: '12px' }}>Loading chart...</p>}
             {chartError && <div className="error-box" style={{ marginTop: '12px' }}>{chartError}</div>}
