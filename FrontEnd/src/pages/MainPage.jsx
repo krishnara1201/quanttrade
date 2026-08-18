@@ -150,10 +150,10 @@ export default function MainPage() {
             Connect to the FastAPI backend, manage projects, and iterate on strategies without touching cURL.
           </p>
           <div className="cta-row">
-            <Link className="primary-btn" to={isAuthenticated ? '/projects' : '/auth'}>
+            <Link className="primary-btn" to={isAuthenticated ? '/projects' : '/auth'} state={{ mode: 'register' }}>
               {isAuthenticated ? 'Go to projects' : 'Start now'}
             </Link>
-            <Link className="ghost-btn" to="/auth">Login / Register</Link>
+            <Link className="ghost-btn" to="/auth" state={{ mode: 'login' }}>Login</Link>
           </div>
         </div>
         <div className="hero-visual">
@@ -269,10 +269,10 @@ export default function MainPage() {
           <p className="lede">No credit card, no install — register and import a ticker to get started.</p>
         </div>
         <div className="cta-row">
-          <Link className="primary-btn" to={isAuthenticated ? '/projects' : '/auth'}>
+          <Link className="primary-btn" to={isAuthenticated ? '/projects' : '/auth'} state={{ mode: 'register' }}>
             {isAuthenticated ? 'Go to projects' : 'Start now'}
           </Link>
-          <Link className="ghost-btn" to="/auth">Login / Register</Link>
+          <Link className="ghost-btn" to="/auth" state={{ mode: 'login' }}>Login</Link>
         </div>
       </section>
     </div>

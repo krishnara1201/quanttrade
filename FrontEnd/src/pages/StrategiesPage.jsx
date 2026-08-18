@@ -326,9 +326,11 @@ export default function StrategiesPage() {
             <div className="card">
               <h3>Create a new strategy</h3>
               <p className="muted">Build strategies visually, or write custom Python signal logic.</p>
-              <button className="primary-btn" onClick={() => setShowBuilder(true)}>
-                Open Strategy Builder
-              </button>
+              <div className="cta-row">
+                <button className="primary-btn" onClick={() => setShowBuilder(true)}>
+                  Open Strategy Builder
+                </button>
+              </div>
               {error && <div className="error-box" style={{ marginTop: '12px' }}>{error}</div>}
             </div>
 

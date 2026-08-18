@@ -4,10 +4,10 @@ import { useAuth } from '../state/AuthContext.jsx';
 
 export default function AuthPage() {
   const { login, register, loading, error, isAuthenticated } = useAuth();
-  const [mode, setMode] = useState('login');
+  const location = useLocation();
+  const [mode, setMode] = useState(location.state?.mode === 'register' ? 'register' : 'login');
   const [form, setForm] = useState({ name: '', email: '', password: '' });
   const navigate = useNavigate();
-  const location = useLocation();
 
   const handleSubmit = async (e) => {
     e.preventDefault();
