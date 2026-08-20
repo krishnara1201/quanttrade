@@ -850,6 +850,12 @@ h1 {
   gap: var(--space-1);
 }
 
+/* A <select> shrinks to its selected option's text width, unlike a date
+   input's fixed native width -- match it so ticker/date fields line up. */
+.field select {
+  min-width: 150px;
+}
+
 .field > span:first-child {
   font-size: 13px;
   color: var(--muted);
