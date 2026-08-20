@@ -3,12 +3,14 @@ import {
   ComposedChart, Bar, XAxis, YAxis, CartesianGrid,
   Tooltip, ResponsiveContainer,
 } from 'recharts';
+import useIsMobile from '../hooks/useIsMobile';
 
 const UP_COLOR = '#3ecf8e';
 const DOWN_COLOR = '#ff6b6b';
 
-function formatDateTick(value) {
-  return typeof value === 'string' ? value.split('T')[0] : value;
+function formatDateTick(value, isMobile) {
+  const date = typeof value === 'string' ? value.split('T')[0] : value;
+  return isMobile && typeof date === 'string' ? date.slice(5) : date;
 }
 
 function Candlestick(props) {
@@ -62,6 +64,10 @@ function CandlestickTooltip({ active, payload, label }) {
 }
 
 export default function MarketDataChart({ data }) {
+  const isMobile = useIsMobile();
+  const maxTicks = isMobile ? 4 : 10;
+  const tickFontSize = isMobile ? 10 : 12;
+
   if (!data || data.length === 0) {
     return <p className="muted">No data to display</p>;
   }
@@ -80,7 +86,7 @@ export default function MarketDataChart({ data }) {
       <ResponsiveContainer width="100%" height={400}>
         <ComposedChart data={chartData} margin={{ top: 5, right: 30, left: 0, bottom: 5 }}>
           <CartesianGrid strokeDasharray="3 3" />
-          <XAxis dataKey="date" tickFormatter={formatDateTick} tick={{ fontSize: 12 }} interval={Math.floor(chartData.length / 10)} />
+          <XAxis dataKey="date" tickFormatter={(value) => formatDateTick(value, isMobile)} tick={{ fontSize: tickFontSize }} interval={Math.floor(chartData.length / maxTicks)} />
           <YAxis domain={['auto', 'auto']} />
           <Tooltip content={<CandlestickTooltip />} />
           <Bar dataKey={(d) => [d.low, d.high]} shape={Candlestick} isAnimationActive={false} />
@@ -90,7 +96,7 @@ export default function MarketDataChart({ data }) {
       <ResponsiveContainer width="100%" height={130}>
         <ComposedChart data={chartData} margin={{ top: 5, right: 30, left: 0, bottom: 5 }}>
           <CartesianGrid strokeDasharray="3 3" />
-          <XAxis dataKey="date" tickFormatter={formatDateTick} tick={{ fontSize: 12 }} interval={Math.floor(chartData.length / 10)} />
+          <XAxis dataKey="date" tickFormatter={(value) => formatDateTick(value, isMobile)} tick={{ fontSize: tickFontSize }} interval={Math.floor(chartData.length / maxTicks)} />
           <YAxis />
           <Tooltip content={<CandlestickTooltip />} />
           <Bar dataKey="volume" shape={VolumeBar} isAnimationActive={false} name="Volume" />

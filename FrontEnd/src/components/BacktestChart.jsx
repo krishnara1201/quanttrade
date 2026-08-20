@@ -3,14 +3,19 @@ import {
   LineChart, Line, ScatterChart, Scatter, XAxis, YAxis, CartesianGrid,
   Tooltip, Legend, ResponsiveContainer, ComposedChart
 } from 'recharts';
+import useIsMobile from '../hooks/useIsMobile';
 
-function formatDateTick(value) {
-  return typeof value === 'string' ? value.split('T')[0] : value;
+function formatDateTick(value, isMobile) {
+  const date = typeof value === 'string' ? value.split('T')[0] : value;
+  return isMobile && typeof date === 'string' ? date.slice(5) : date;
 }
 
 export default function BacktestChart({
   data, trades, equityCurve, benchmarkEquityCurve = [], priceName = 'Stock Price', equityName = 'Equity',
 }) {
+  const isMobile = useIsMobile();
+  const maxTicks = isMobile ? 4 : 10;
+  const tickFontSize = isMobile ? 10 : 12;
   const entryByDate = new Map();
   const exitByDate = new Map();
   (trades || []).forEach((t) => {
@@ -54,9 +59,9 @@ export default function BacktestChart({
             <CartesianGrid strokeDasharray="3 3" />
             <XAxis
               dataKey="date"
-              tickFormatter={formatDateTick}
-              tick={{ fontSize: 12 }}
-              interval={Math.floor(chartData.length / 10)}
+              tickFormatter={(value) => formatDateTick(value, isMobile)}
+              tick={{ fontSize: tickFontSize }}
+              interval={Math.floor(chartData.length / maxTicks)}
             />
             <YAxis yAxisId="left" />
             <YAxis yAxisId="right" orientation="right" />
@@ -123,9 +128,9 @@ export default function BacktestChart({
             <CartesianGrid strokeDasharray="3 3" />
             <XAxis
               dataKey="date"
-              tickFormatter={formatDateTick}
-              tick={{ fontSize: 12 }}
-              interval={Math.floor(equityData.length / 10)}
+              tickFormatter={(value) => formatDateTick(value, isMobile)}
+              tick={{ fontSize: tickFontSize }}
+              interval={Math.floor(equityData.length / maxTicks)}
             />
             <YAxis />
             <Tooltip

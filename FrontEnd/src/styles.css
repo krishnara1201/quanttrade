@@ -246,6 +246,8 @@ code {
   color: var(--muted);
   font-size: 12px;
   font-family: var(--font-mono);
+  white-space: nowrap;
+  flex-shrink: 0;
 }
 
 .chip-warn {
@@ -416,6 +418,8 @@ h1 {
   font-size: 12px;
   font-family: var(--font-mono);
   letter-spacing: 0.2px;
+  white-space: nowrap;
+  flex-shrink: 0;
 }
 
 .cta-row {
@@ -741,6 +745,7 @@ h1 {
 
 .card-head {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
   margin-bottom: var(--space-3);
@@ -773,6 +778,7 @@ h1 {
 
 .list-row {
   display: flex;
+  flex-wrap: wrap;
   justify-content: space-between;
   align-items: flex-start;
   gap: var(--space-4);
@@ -782,12 +788,18 @@ h1 {
   border: 1px solid var(--border);
 }
 
+.list-row > div:first-child {
+  min-width: 0;
+  flex: 1 1 220px;
+}
+
 .list-row.active {
   border-color: var(--accent);
 }
 
 .title-row {
   display: flex;
+  flex-wrap: wrap;
   gap: var(--space-2);
   align-items: center;
 }
@@ -1081,6 +1093,13 @@ textarea {
   }
   .metrics-grid {
     grid-template-columns: repeat(2, 1fr);
+  }
+  .list-row {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .list-row > div:first-child {
+    flex-basis: auto;
   }
 }
 
