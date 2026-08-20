@@ -10,6 +10,11 @@ function formatDateTick(value, isMobile) {
   return isMobile && typeof date === 'string' ? date.slice(5) : date;
 }
 
+const paddedDomain = [
+  (dataMin, dataMax) => dataMin - (dataMax - dataMin) * 0.1,
+  (dataMin, dataMax) => dataMax + (dataMax - dataMin) * 0.1,
+];
+
 export default function BacktestChart({
   data, trades, equityCurve, benchmarkEquityCurve = [], priceName = 'Stock Price', equityName = 'Equity',
 }) {
@@ -63,8 +68,8 @@ export default function BacktestChart({
               tick={{ fontSize: tickFontSize }}
               interval={Math.floor(chartData.length / maxTicks)}
             />
-            <YAxis yAxisId="left" />
-            <YAxis yAxisId="right" orientation="right" />
+            <YAxis yAxisId="left" domain={paddedDomain} />
+            <YAxis yAxisId="right" orientation="right" domain={paddedDomain} />
             <Tooltip
               formatter={(value) => (typeof value === 'number' ? value.toFixed(2) : value)}
               labelFormatter={formatDateTick}
@@ -132,7 +137,7 @@ export default function BacktestChart({
               tick={{ fontSize: tickFontSize }}
               interval={Math.floor(equityData.length / maxTicks)}
             />
-            <YAxis />
+            <YAxis domain={paddedDomain} />
             <Tooltip
               formatter={(value) => (typeof value === 'number' ? value.toFixed(2) : value)}
               labelFormatter={formatDateTick}
