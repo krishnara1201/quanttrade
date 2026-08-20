@@ -506,7 +506,7 @@ export default function StrategiesPage() {
                 </select>
               </label>
 
-              <div className="title-row" style={{ marginBottom: '8px' }}>
+              <div className="mode-toggle" style={{ marginBottom: '8px' }}>
                 <button
                   type="button"
                   className={backtestMode === 'single' ? 'primary-btn' : 'ghost-btn'}
