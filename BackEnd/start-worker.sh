@@ -14,4 +14,11 @@ set -e
 # whole instance ("Ran out of memory (used over 512MB)"). Keep the prefork
 # pool (not --pool=solo) since celery_app.py's task_time_limit/
 # task_soft_time_limit enforcement requires it.
-exec uv run python -m celery -A tasks.celery_app worker --loglevel=info --concurrency=1
+# --without-gossip/--without-mingle/--without-heartbeat disable Celery's
+# multi-worker coordination features (peer discovery, cross-worker
+# heartbeats) that this single-worker deployment has no other workers to
+# coordinate with -- left on, they periodically publish/subscribe over Redis
+# purely to announce/discover peers, which on a metered broker (e.g.
+# Upstash) is billed as commands for zero functional benefit here.
+exec uv run python -m celery -A tasks.celery_app worker --loglevel=info --concurrency=1 \
+    --without-gossip --without-mingle --without-heartbeat

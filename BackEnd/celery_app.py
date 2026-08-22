@@ -27,6 +27,14 @@ celery_app.conf.update(
     # Lets tests run task.delay() synchronously in-process with no real
     # broker — see tests/conftest.py (added in Task 6).
     task_always_eager=os.getenv("CELERY_TASK_ALWAYS_EAGER", "false").lower() == "true",
+    # kombu's Redis transport issues a BRPOP every `polling_interval` seconds
+    # per queue while idle (default 1s) -- with a single low-traffic worker
+    # that's pure overhead billed as commands on a metered broker (this is
+    # what actually burned through Upstash's 500k/mo free-tier command quota,
+    # not real task volume -- see CLAUDE.md). 5s just means a newly enqueued
+    # task can sit up to 5s before being picked up, negligible next to these
+    # tasks' multi-second-to-minutes runtimes.
+    broker_transport_options={"polling_interval": 5.0},
 )
 
 if BROKER_URL.startswith("rediss://"):
