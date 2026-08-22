@@ -69,7 +69,6 @@ export default function BacktestChart({
               interval={Math.floor(chartData.length / maxTicks)}
             />
             <YAxis yAxisId="left" domain={paddedDomain} />
-            <YAxis yAxisId="right" orientation="right" domain={paddedDomain} />
             <Tooltip
               formatter={(value) => (typeof value === 'number' ? value.toFixed(2) : value)}
               labelFormatter={formatDateTick}
