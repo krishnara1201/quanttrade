@@ -10,10 +10,15 @@ function formatDateTick(value, isMobile) {
   return isMobile && typeof date === 'string' ? date.slice(5) : date;
 }
 
-const paddedDomain = [
-  (dataMin, dataMax) => dataMin - (dataMax - dataMin) * 0.1,
-  (dataMin, dataMax) => dataMax + (dataMax - dataMin) * 0.1,
-];
+// recharts calls domain[0]/domain[1] with only their own boundary value
+// (dataMin, dataMax respectively) when domain is a [fn, fn] pair -- passing
+// the whole tuple through a single function is the only way to compute a
+// padding that needs both bounds. See parseSpecifiedDomain in
+// recharts/lib/util/ChartUtils.js.
+const paddedDomain = ([dataMin, dataMax]) => {
+  const pad = (dataMax - dataMin) * 0.1;
+  return [dataMin - pad, dataMax + pad];
+};
 
 export default function BacktestChart({
   data, trades, equityCurve, benchmarkEquityCurve = [], priceName = 'Stock Price', equityName = 'Equity',
