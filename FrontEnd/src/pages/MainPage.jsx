@@ -25,8 +25,8 @@ const CAPABILITIES = [
   },
   {
     icon: ShieldCheck,
-    title: 'JWT auth, properly rotated',
-    body: 'Short-lived access tokens plus single-use refresh tokens with reuse detection.',
+    title: 'Your login stays safe',
+    body: 'Sessions expire quickly and refresh themselves in the background — no long-lived tokens sitting around in your browser for something to steal.',
   },
 ];
 
@@ -95,7 +95,7 @@ const FAQ = [
   },
   {
     q: 'Is my custom strategy code safe to run?',
-    a: "Custom code executes in a restricted, isolated environment that only permits pandas/numpy operations — it can't access the network or file system.",
+    a: "Custom code executes in a restricted, isolated environment that only permits pandas/numpy operations — it can't access the network or file system. It also runs with CPU and memory limits, so a runaway script can't hang or crash the backtest.",
   },
   {
     q: 'Where does market data come from?',
@@ -109,24 +109,28 @@ const FAQ = [
     q: 'Can I backtest a portfolio of tickers, not just one?',
     a: 'Yes — switch a backtest to Portfolio mode, add two or more tickers with custom weights, and get an aggregate equity curve plus a per-ticker breakdown alongside the single-ticker view.',
   },
+  {
+    q: 'Why does a backtest run in the background instead of showing results right away?',
+    a: 'Backtests are handed off to a separate worker process instead of blocking the request, so a multi-minute run (especially walk-forward, which runs many folds in sequence) doesn\'t tie up the app — you can navigate away and come back once it\'s done.',
+  },
 ];
 
 const UNDER_THE_HOOD = [
   {
-    title: 'Async by design',
-    body: 'Backtests run on a Celery + Redis worker — the API returns immediately instead of blocking on a multi-minute run.',
+    title: 'Costs are modeled',
+    body: 'Commission and slippage are baked into every trade, so returns aren\'t inflated by unrealistic fills.',
   },
   {
-    title: 'Sandboxed execution',
-    body: 'Custom Python strategies run in a restricted subprocess with CPU/memory limits and no network access.',
+    title: 'Benchmarked, not just measured',
+    body: 'Every result includes a buy-and-hold overlay, so you can tell if a strategy actually beat doing nothing.',
   },
   {
-    title: 'Walk-forward evaluation',
-    body: 'Each fold re-fits fresh on an expanding window, stitched into one out-of-sample equity curve.',
+    title: 'Built to catch overfitting',
+    body: 'Walk-forward mode retrains on expanding windows and only scores unseen data, so a strategy that just memorized the past gets caught before you trust it.',
   },
   {
-    title: 'Benchmark included',
-    body: 'Every backtest result ships with a buy-and-hold overlay for comparison.',
+    title: 'Your code stays yours',
+    body: 'Custom Python strategies run sandboxed with no network access — nothing leaves, nothing gets read.',
   },
 ];
 
@@ -147,7 +151,7 @@ export default function MainPage() {
           <div className="pill">Quant strategies, one workspace</div>
           <h1>Ship, test, and monitor trading ideas faster.</h1>
           <p className="lede">
-            Connect to the FastAPI backend, manage projects, and iterate on strategies without touching cURL.
+            Build a strategy, backtest it against real historical data, and see exactly how it would have performed — before you risk anything real.
           </p>
           <div className="cta-row">
             <Link className="primary-btn" to={isAuthenticated ? '/projects' : '/auth'} state={{ mode: 'register' }}>
@@ -252,7 +256,7 @@ export default function MainPage() {
 
         <aside className="info-aside">
           <div className="info-aside-head">
-            <span className="label">Under the hood</span>
+            <span className="label">Why trust the numbers</span>
           </div>
           {UNDER_THE_HOOD.map((item) => (
             <div className="info-aside-item" key={item.title}>
