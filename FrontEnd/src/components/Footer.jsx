@@ -10,7 +10,7 @@ export default function Footer() {
           <span>QuantTrade</span>
         </div>
         <p className="footer-tagline">
-          A backtesting platform for trading strategies — FastAPI + Celery on the backend, React on the front.
+          A backtesting platform for trading strategies — build, test, and review before you risk anything real.
         </p>
         <div className="footer-links">
           <a href="https://github.com/krishnara1201/quanttrade" target="_blank" rel="noreferrer">
